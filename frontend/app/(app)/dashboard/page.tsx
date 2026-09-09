@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Plus, Globe, Clock, Users, ArrowRight, Loader2, Search, Sparkles } from 'lucide-react';
+import { Plus, Globe, Clock, Users, ArrowRight, Loader2, Search, Sparkles, StopCircle } from 'lucide-react';
 import { type Study, STUDY_STATUS_CONFIG } from '@/lib/types';
 import { formatRelativeTime, getDomainFromUrl } from '@/lib/utils';
+import { cancelStudy } from '@/lib/api';
 import { track } from '@/lib/analytics';
 
 export default function DashboardPage() {
@@ -206,14 +207,34 @@ export default function DashboardPage() {
                 )}
 
                 {/* Footer */}
-                <div className="flex items-center justify-between text-xs text-surface-400 pt-3 border-t border-surface-100">
+                <div className="flex items-center justify-between text-xs text-surface-400 pt-3 border-t border-surface-100 mt-auto">
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3" />
                     {formatRelativeTime(study.created_at)}
                   </span>
-                  <span className="flex items-center gap-1 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                    View <ArrowRight className="w-3 h-3" />
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {isRunning && (
+                      <button
+                        onClick={async (e) => {
+                          e.preventDefault(); // Prevent navigating to study detail
+                          if (confirm('Cancel this study?')) {
+                            try {
+                              await cancelStudy(study.id);
+                            } catch (error) {
+                              console.error('Failed to cancel study:', error);
+                            }
+                          }
+                        }}
+                        className="flex items-center gap-1 text-surface-400 hover:text-error transition-colors"
+                        title="Cancel Study"
+                      >
+                        <StopCircle className="w-4 h-4" />
+                      </button>
+                    )}
+                    <span className="flex items-center gap-1 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                      View <ArrowRight className="w-3 h-3" />
+                    </span>
+                  </div>
                 </div>
               </Link>
             );

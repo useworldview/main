@@ -150,13 +150,14 @@ What do you do next? Remember: you ARE {persona.get('name', 'this person')}. Rea
         raw = response.parse_json()
         decision = AgentDecision(raw)
         logger.info(
-            f"Agent decision: action={decision.action}, "
-            f"feeling={decision.feeling}, reasoning={decision.reasoning[:80]}"
+            f"[DECIDE] ✅ Decision: action={decision.action}, target={decision.target}, "
+            f"feeling={decision.feeling}, reasoning='{decision.reasoning[:100]}'"
         )
         return decision
 
     except Exception as e:
-        logger.error(f"Decision failed: {e}")
+        logger.error(f"[DECIDE] ❌ Decision LLM call FAILED: {type(e).__name__}: {e}")
+        logger.warning("[DECIDE] ⚠️ Falling back to scroll_down (safest default action)")
         # Default to scrolling down on error — safest action
         return AgentDecision({
             "thinking": "I'm having trouble processing this page.",

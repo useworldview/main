@@ -62,6 +62,7 @@ async def execute_action(driver: BrowserDriver, decision: AgentDecision) -> dict
     - Forces synthetic data for form fills
     """
     action = decision.action
+    logger.info(f"[ACT] Executing action={action}, target={decision.target}")
     result = {
         "action": action,
         "success": False,
@@ -79,7 +80,7 @@ async def execute_action(driver: BrowserDriver, decision: AgentDecision) -> dict
                     result["blocked"] = True
                     result["details"] = {"reason": reason}
                     result["success"] = True  # Not a failure — it's a guardrail
-                    logger.info(f"Blocked click on element {target_index}: {reason}")
+                    logger.warning(f"[ACT] 🛑 BLOCKED click on element {target_index}: {reason}")
                     return result
 
                 success = await driver.click_element(target_index)
@@ -139,7 +140,16 @@ async def execute_action(driver: BrowserDriver, decision: AgentDecision) -> dict
 
     except Exception as e:
         result["details"] = {"error": str(e)}
-        logger.error(f"Action execution failed: {action} — {e}")
+        logger.error(f"[ACT] ❌ Action execution failed: action={action}, error={type(e).__name__}: {e}")
+
+    # Log result summary
+    if result.get("success"):
+        if result.get("blocked"):
+            logger.info(f"[ACT] Result: BLOCKED (guardrail)")
+        else:
+            logger.info(f"[ACT] Result: ✅ SUCCESS (action={action})")
+    elif not result.get("success") and "error" not in result.get("details", {}):
+        logger.warning(f"[ACT] Result: ❌ FAILED (action={action})")
 
     return result
 
@@ -172,7 +182,7 @@ async def _check_click_guardrails(driver: BrowserDriver, element_index: int) -> 
         return False, ""
 
     except Exception as e:
-        logger.warning(f"Guardrail check failed: {e}")
+        logger.warning(f"[ACT] Guardrail check failed: {e}")
         return False, ""
 
 

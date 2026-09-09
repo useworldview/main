@@ -273,6 +273,92 @@ async def deploy_study(
 
 
 # ============================================================================
+# POST /api/studies/{id}/cancel — Cancel a running study
+# ============================================================================
+
+@router.post("/api/studies/{study_id}/cancel", response_model=MessageResponse)
+async def cancel_study(
+    study_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Cancel a running study immediately.
+    
+    1. Mark all non-terminal sessions as failed (cancelled)
+    2. Clean up pending jobs
+    3. Set study status to failed with 'Cancelled by user'
+    """
+    sb = get_supabase_client()
+
+    # Verify ownership
+    study = _verify_study_ownership(sb, study_id, user_id)
+
+    # Only allow cancelling active studies
+    cancellable_statuses = {"analyzing_site", "deploying", "running", "analyzing_results"}
+    if study["status"] not in cancellable_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Study is not in a cancellable state (current: {study['status']})",
+        )
+
+    # Mark all non-terminal sessions as failed
+    non_terminal_sessions = (
+        sb.table("agent_sessions")
+        .select("id, status")
+        .eq("study_id", study_id)
+        .in_("status", ["queued", "running"])
+        .execute()
+    ).data or []
+
+    cancelled_count = 0
+    for session in non_terminal_sessions:
+        sb.table("agent_sessions").update({
+            "status": "failed",
+            "outcome": "error",
+            "outcome_reason": "Cancelled by user",
+            "end_time": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", session["id"]).execute()
+        cancelled_count += 1
+
+    # Clean up pending jobs for this study's sessions
+    session_ids = [s["id"] for s in non_terminal_sessions]
+    if session_ids:
+        # Delete pending/claimed jobs that reference these sessions
+        for session_id in session_ids:
+            try:
+                sb.table("agent_jobs").delete().in_(
+                    "status", ["pending", "claimed"]
+                ).contains("payload", {"session_id": session_id}).execute()
+            except Exception:
+                pass  # Best effort cleanup
+
+    # Also delete any pending analyze_site or other study-level jobs
+    try:
+        sb.table("agent_jobs").delete().in_(
+            "status", ["pending", "claimed"]
+        ).contains("payload", {"study_id": study_id}).execute()
+    except Exception:
+        pass  # Best effort cleanup
+
+    # Update study status
+    sb.table("studies").update({
+        "status": "failed",
+        "error_message": "Cancelled by user",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", study_id).execute()
+
+    logger.info(
+        f"Study {study_id} cancelled by user: "
+        f"{cancelled_count} sessions cancelled"
+    )
+
+    return MessageResponse(
+        message=f"Study cancelled. {cancelled_count} running sessions stopped.",
+        study_id=study_id,
+    )
+
+
+# ============================================================================
 # POST /api/studies/{id}/retry-failed-sessions
 # ============================================================================
 

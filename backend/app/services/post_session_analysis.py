@@ -91,7 +91,10 @@ async def analyze_session(payload: dict) -> None:
     session_id = payload["session_id"]
     study_id = payload["study_id"]
     persona_id = payload["persona_id"]
+    sid = session_id[:8]
     sb = get_supabase_client()
+
+    logger.info(f"[POST_ANALYSIS] Starting analysis for session={sid}, study={study_id[:8]}")
 
     # Get persona
     persona = sb.table("personas").select("*").eq("id", persona_id).single().execute().data
@@ -114,8 +117,12 @@ async def analyze_session(payload: dict) -> None:
     events = events_result.data or []
 
     if not events:
-        logger.warning(f"No events found for session {session_id}, skipping analysis")
+        logger.warning(f"[POST_ANALYSIS] No events found for session {sid}, skipping analysis")
+        # Still check synthesis in case this was the last session
+        await _check_and_enqueue_synthesis(study_id)
         return
+
+    logger.info(f"[POST_ANALYSIS] Loaded {len(events)} events for session {sid}")
 
     # Build prompt context
     persona_desc = _format_persona(persona)
@@ -170,7 +177,7 @@ async def analyze_session(payload: dict) -> None:
 
             sb.table("findings").insert(insert_data).execute()
         except Exception as e:
-            logger.warning(f"Failed to insert finding: {e}")
+            logger.warning(f"[POST_ANALYSIS] Failed to insert finding: {e}")
 
     # Insert decision explanations
     decisions = result.get("decision_explanations", [])
@@ -184,10 +191,10 @@ async def analyze_session(payload: dict) -> None:
                 "linked_event_ids": linked_ids,
             }).execute()
         except Exception as e:
-            logger.warning(f"Failed to insert decision explanation: {e}")
+            logger.warning(f"[POST_ANALYSIS] Failed to insert decision explanation: {e}")
 
     logger.info(
-        f"Session analysis complete for {session_id}: "
+        f"[POST_ANALYSIS] ✅ Session {sid} analysis complete: "
         f"{len(findings)} findings, {len(decisions)} decisions"
     )
 
@@ -235,9 +242,25 @@ async def _check_and_enqueue_synthesis(study_id: str) -> None:
         analyzed_sessions = sessions_with_findings
         total_with_data = len([s for s in sessions if s.get("outcome") in ("completed", "abandoned")])
 
+        logger.info(
+            f"[POST_ANALYSIS] Study {study_id[:8]}: all sessions terminal. "
+            f"analyzed={analyzed_sessions}/{total_with_data} sessions with data"
+        )
+
+        # If no sessions produced usable data, mark study as failed
+        if total_with_data == 0:
+            from datetime import datetime, timezone
+            sb.table("studies").update({
+                "status": "failed",
+                "error_message": "All agent sessions failed — no data to analyze",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", study_id).execute()
+            logger.warning(f"[POST_ANALYSIS] Study {study_id[:8]} marked FAILED — no sessions produced data")
+            return
+
         # Only synthesize once all sessions that produced data have been analyzed
-        if analyzed_sessions >= total_with_data and total_with_data > 0:
-            logger.info(f"All sessions analyzed for study {study_id}, enqueuing synthesis")
+        if analyzed_sessions >= total_with_data:
+            logger.info(f"[POST_ANALYSIS] ✅ All sessions analyzed for study {study_id[:8]}, enqueuing synthesis")
             sb.table("studies").update({
                 "status": "analyzing_results",
             }).eq("id", study_id).execute()
@@ -246,6 +269,16 @@ async def _check_and_enqueue_synthesis(study_id: str) -> None:
                 job_type=JobType.SYNTHESIZE_STUDY,
                 payload={"study_id": study_id},
             )
+        else:
+            logger.info(
+                f"[POST_ANALYSIS] Study {study_id[:8]}: waiting for more sessions to be analyzed "
+                f"({analyzed_sessions}/{total_with_data})"
+            )
+    else:
+        non_terminal = [s for s in sessions if s.get("status") not in terminal_states]
+        logger.info(
+            f"[POST_ANALYSIS] Study {study_id[:8]}: {len(non_terminal)} sessions still running"
+        )
 
 
 def _format_persona(persona: dict) -> str:

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
-import { retryFailedSessions } from '@/lib/api';
+import { retryFailedSessions, cancelStudy } from '@/lib/api';
 import {
   type Study, type AgentSession, type Persona, type Finding,
   type CrossPersonaInsight, type Recommendation,
@@ -16,7 +16,7 @@ import {
   Globe, Clock, Users, Loader2, CheckCircle, XCircle,
   AlertTriangle, ArrowRight, ThumbsUp, ThumbsDown, Shield,
   ShieldAlert, Brain, TrendingUp, Eye, BarChart3,
-  ChevronRight, RefreshCw, Lightbulb, Target, Sparkles
+  ChevronRight, RefreshCw, Lightbulb, Target, Sparkles, StopCircle
 } from 'lucide-react';
 
 export default function StudyResultsPage() {
@@ -31,6 +31,7 @@ export default function StudyResultsPage() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'insights' | 'recommendations'>('overview');
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     track('dashboard_viewed', { study_id: studyId });
@@ -144,6 +145,29 @@ export default function StudyResultsPage() {
             Retry {failedSessions.length} Failed
           </button>
         )}
+
+        {isRunning && (
+          <button
+            onClick={async () => {
+              if (confirm('Are you sure you want to cancel this study? All running sessions will be stopped.')) {
+                setCancelling(true);
+                try {
+                  await cancelStudy(studyId);
+                } catch (e) {
+                  console.error('Failed to cancel:', e);
+                } finally {
+                  setCancelling(false);
+                }
+              }
+            }}
+            disabled={cancelling}
+            className="btn-secondary text-error hover:bg-red-50"
+            id="cancel-study-btn"
+          >
+            {cancelling ? <Loader2 className="w-4 h-4 animate-spin" /> : <StopCircle className="w-4 h-4" />}
+            {cancelling ? 'Cancelling...' : 'Cancel Study'}
+          </button>
+        )}
       </div>
 
       {/* Running State: Progress */}
@@ -177,6 +201,17 @@ export default function StudyResultsPage() {
                       <span className="text-xs text-surface-400">• {session.step_count}/{session.step_budget} steps</span>
                     )}
                   </div>
+                  {/* Show error reason for failed sessions */}
+                  {session.status === 'failed' && session.outcome_reason && (
+                    <div className="mt-2 p-2 rounded-lg bg-red-50 border border-red-100">
+                      <p className="text-xs text-red-600 font-medium">Error:</p>
+                      <p className="text-xs text-red-500 mt-0.5 break-words whitespace-pre-wrap">
+                        {session.outcome_reason.length > 300
+                          ? session.outcome_reason.slice(0, 300) + '...'
+                          : session.outcome_reason}
+                      </p>
+                    </div>
+                  )}
                   {session.step_count > 0 && (
                     <div className="mt-2 h-1.5 rounded-full bg-surface-200 overflow-hidden">
                       <div

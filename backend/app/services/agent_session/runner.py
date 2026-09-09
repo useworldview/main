@@ -51,6 +51,14 @@ async def run_agent_session(payload: dict) -> None:
     target_url = payload["target_url"]
     step_budget = payload.get("step_budget", 40)
     max_pages = payload.get("max_pages", 5)
+    sid = session_id[:8]  # Short ID for logs
+
+    logger.info(
+        f"[SESSION:{sid}] ═══ Starting agent session ═══\n"
+        f"[SESSION:{sid}]   study={study_id[:8]}, persona={persona_id[:8]}\n"
+        f"[SESSION:{sid}]   target={target_url}\n"
+        f"[SESSION:{sid}]   budget={step_budget} steps, max_pages={max_pages}"
+    )
 
     sb = get_supabase_client()
     settings = get_settings()
@@ -69,6 +77,7 @@ async def run_agent_session(payload: dict) -> None:
         "status": "running",
         "start_time": datetime.now(timezone.utc).isoformat(),
     }).eq("id", session_id).execute()
+    logger.info(f"[SESSION:{sid}] Session status set to 'running'")
 
     # Emit analytics event
     _emit_event(sb, study_id, "agent_session_started", {"persona_id": persona_id})
@@ -83,6 +92,7 @@ async def run_agent_session(payload: dict) -> None:
 
     try:
         # Launch browser
+        logger.info(f"[SESSION:{sid}] Launching browser...")
         await driver.launch()
 
         # Check robots.txt for target URL
@@ -91,16 +101,19 @@ async def run_agent_session(payload: dict) -> None:
         if not is_allowed:
             outcome = "error"
             outcome_reason = "Target site disallows automated access via robots.txt"
+            logger.warning(f"[SESSION:{sid}] ❌ Blocked by robots.txt")
             return
 
         # Rate limit check
         enforce_rate_limit(parsed.netloc)
 
         # Navigate to target URL
+        logger.info(f"[SESSION:{sid}] Navigating to {target_url}...")
         nav_success = await driver.navigate(target_url)
         if not nav_success:
             outcome = "error"
-            outcome_reason = "Failed to load target URL"
+            outcome_reason = f"Failed to load target URL: {target_url}"
+            logger.error(f"[SESSION:{sid}] ❌ Failed to load target URL")
             return
 
         pages_visited.add(target_url)
@@ -125,18 +138,20 @@ async def run_agent_session(payload: dict) -> None:
         # ================================================================
         while True:
             step_count += 1
+            logger.info(f"[SESSION:{sid}] ═══ STEP {step_count}/{step_budget} ═══")
 
             # Guardrail checks
             try:
                 check_step_budget(step_count, step_budget)
                 check_wall_clock_timeout(start_time, wall_clock_timeout)
             except GuardrailViolation as e:
-                logger.info(f"Session {session_id} budget exhausted: {e}")
+                logger.info(f"[SESSION:{sid}] ⏱️ Budget exhausted: {e}")
                 outcome = "completed"
                 outcome_reason = f"Session budget reached: {str(e)}"
                 break
 
             # PERCEIVE
+            logger.info(f"[SESSION:{sid}] Step {step_count} → PERCEIVE")
             current_perception = await perceive(driver)
             current_url = current_perception.url
             pages_visited.add(current_url)
@@ -147,6 +162,7 @@ async def run_agent_session(payload: dict) -> None:
             except BotDetected as e:
                 outcome = "error"
                 outcome_reason = f"Target site blocked automated access: {str(e)}"
+                logger.warning(f"[SESSION:{sid}] 🤖 Bot detection triggered: {e}")
                 await _log_event(
                     sb=sb,
                     session_id=session_id,
@@ -166,11 +182,12 @@ async def run_agent_session(payload: dict) -> None:
             if parsed_current.netloc == parsed.netloc:
                 is_allowed = await check_robots_for_path(current_url, parsed_current.path or "/")
                 if not is_allowed:
-                    logger.info(f"Path {parsed_current.path} disallowed by robots.txt, going back")
+                    logger.info(f"[SESSION:{sid}] Path {parsed_current.path} disallowed by robots.txt, going back")
                     await driver.go_back()
                     continue
 
             # DECIDE
+            logger.info(f"[SESSION:{sid}] Step {step_count} → DECIDE")
             decision = await decide(
                 persona=persona,
                 research_goals=research_goals,
@@ -188,6 +205,10 @@ async def run_agent_session(payload: dict) -> None:
             if decision.is_terminal:
                 outcome = "completed" if decision.action == "complete" else "abandoned"
                 outcome_reason = decision.reasoning
+                logger.info(
+                    f"[SESSION:{sid}] 🏁 Session ending: outcome={outcome}, "
+                    f"reason='{decision.reasoning[:100]}'"
+                )
 
                 await _log_event(
                     sb=sb,
@@ -221,6 +242,7 @@ async def run_agent_session(payload: dict) -> None:
                 break
 
             # ACT
+            logger.info(f"[SESSION:{sid}] Step {step_count} → ACT (action={decision.action})")
             enforce_rate_limit(parsed.netloc, min_delay_seconds=0.5)
             action_result = await execute_action(driver, decision)
 
@@ -291,9 +313,14 @@ async def run_agent_session(payload: dict) -> None:
                 }).eq("id", session_id).execute()
 
     except Exception as e:
-        logger.error(f"Agent session {session_id} crashed: {e}", exc_info=True)
+        import traceback as _tb
+        full_tb = _tb.format_exc()
+        logger.error(
+            f"[SESSION:{sid}] 💥 CRASHED: {type(e).__name__}: {e}\n"
+            f"[SESSION:{sid}] Full traceback:\n{full_tb}"
+        )
         outcome = "error"
-        outcome_reason = f"Session crashed: {str(e)}"
+        outcome_reason = f"Session crashed: {type(e).__name__}: {str(e)}\n\nTraceback:\n{full_tb[:2000]}"
 
     finally:
         # Close browser
@@ -320,8 +347,8 @@ async def run_agent_session(payload: dict) -> None:
             "duration_seconds": round(time.time() - start_time),
         })
 
-        # Enqueue post-session analysis (only if we got at least some events)
-        if step_count > 0:
+        # Enqueue post-session analysis (only if we got events AND the session didn't crash)
+        if step_count > 0 and outcome != "error":
             enqueue_job(
                 job_type=JobType.ANALYZE_SESSION,
                 payload={
@@ -330,11 +357,18 @@ async def run_agent_session(payload: dict) -> None:
                     "persona_id": persona_id,
                 },
             )
+            logger.info(f"[SESSION:{sid}] Enqueued post-session analysis")
+        elif outcome == "error":
+            logger.warning(
+                f"[SESSION:{sid}] Skipping post-session analysis (session errored)"
+            )
 
         logger.info(
-            f"Session {session_id} finished: outcome={outcome}, "
-            f"steps={step_count}, pages={len(pages_visited)}, "
-            f"duration={time.time() - start_time:.1f}s"
+            f"[SESSION:{sid}] ═══ Session finished ═══\n"
+            f"[SESSION:{sid}]   outcome={outcome}\n"
+            f"[SESSION:{sid}]   steps={step_count}, pages={len(pages_visited)}\n"
+            f"[SESSION:{sid}]   duration={time.time() - start_time:.1f}s\n"
+            f"[SESSION:{sid}]   reason='{outcome_reason[:200]}'"
         )
 
 

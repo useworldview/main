@@ -287,11 +287,11 @@ async def call_llm(
     for provider_name in providers:
         provider_fn = _PROVIDERS.get(provider_name)
         if not provider_fn:
-            logger.warning(f"Unknown LLM provider: {provider_name}, skipping")
+            logger.warning(f"[LLM] Unknown provider '{provider_name}', skipping")
             continue
 
         try:
-            logger.info(f"Calling LLM provider '{provider_name}' for purpose '{purpose}'")
+            logger.info(f"[LLM] Trying provider '{provider_name}' for purpose='{purpose}'")
             start_time = time.time()
 
             response = await provider_fn(
@@ -303,9 +303,9 @@ async def call_llm(
 
             elapsed = time.time() - start_time
             logger.info(
-                f"LLM call succeeded: provider={provider_name}, "
-                f"input_tokens={response.input_tokens}, output_tokens={response.output_tokens}, "
-                f"elapsed={elapsed:.2f}s"
+                f"[LLM] ✅ Success: provider={provider_name}, model={response.model}, "
+                f"tokens={response.input_tokens}in/{response.output_tokens}out, "
+                f"elapsed={elapsed:.2f}s, purpose={purpose}"
             )
 
             # Log to database
@@ -323,13 +323,20 @@ async def call_llm(
 
         except Exception as e:
             error_msg = f"Provider '{provider_name}' failed: {type(e).__name__}: {str(e)}"
-            logger.warning(error_msg)
+            logger.error(f"[LLM] ❌ {error_msg}")
             errors.append(error_msg)
             continue
 
+    error_detail = "\n".join(f"  • {e}" for e in errors)
+    logger.critical(
+        f"[LLM] 🚨 ALL PROVIDERS FAILED for purpose='{purpose}'\n"
+        f"[LLM] Tried providers: {providers}\n"
+        f"[LLM] Errors:\n{error_detail}\n"
+        f"[LLM] 💡 Check your API keys in .env — at least one LLM provider must be configured and working."
+    )
     raise RuntimeError(
-        f"All LLM providers failed for purpose '{purpose}'. Errors:\n"
-        + "\n".join(errors)
+        f"All LLM providers failed for purpose '{purpose}'. "
+        f"Check API keys in .env. Errors:\n{error_detail}"
     )
 
 
@@ -394,7 +401,7 @@ async def call_llm_with_vision(
             else:
                 continue
 
-            logger.info(f"Vision LLM call succeeded: provider={provider_name}")
+            logger.info(f"[LLM] ✅ Vision call succeeded: provider={provider_name}, purpose={purpose}")
 
             await _log_usage(
                 study_id=study_id,
@@ -410,13 +417,18 @@ async def call_llm_with_vision(
 
         except Exception as e:
             error_msg = f"Vision provider '{provider_name}' failed: {type(e).__name__}: {str(e)}"
-            logger.warning(error_msg)
+            logger.error(f"[LLM] ❌ {error_msg}")
             errors.append(error_msg)
             continue
 
+    error_detail = "\n".join(f"  • {e}" for e in errors)
+    logger.critical(
+        f"[LLM] 🚨 ALL VISION PROVIDERS FAILED for purpose='{purpose}'\n"
+        f"[LLM] Errors:\n{error_detail}\n"
+        f"[LLM] 💡 Vision requires Groq (llama-3.2-90b-vision), Gemini, OpenRouter, or Claude."
+    )
     raise RuntimeError(
-        f"All vision LLM providers failed for purpose '{purpose}'. Errors:\n"
-        + "\n".join(errors)
+        f"All vision LLM providers failed for purpose '{purpose}'. Errors:\n{error_detail}"
     )
 
 
@@ -515,4 +527,4 @@ async def _log_usage(
             "estimated_cost_usd": estimated_cost,
         }).execute()
     except Exception as e:
-        logger.error(f"Failed to log LLM usage: {e}")
+        logger.error(f"[LLM] Failed to log usage to DB: {e}")

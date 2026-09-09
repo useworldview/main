@@ -44,9 +44,22 @@ async def perceive(driver: BrowserDriver) -> Perception:
     - Screenshot (for vision-capable models and storage)
     """
     url = await driver.get_current_url()
+    logger.info(f"[PERCEIVE] Capturing page state for {url}")
+
     dom_snapshot = await driver.get_dom_snapshot()
     screenshot_base64 = await driver.take_screenshot()
     screenshot_bytes = await driver.take_screenshot_bytes()
+
+    # Count interactive elements for logging
+    element_count = dom_snapshot.count("[") // 2  # rough estimate from snapshot format
+    screenshot_size = len(screenshot_bytes) if screenshot_bytes else 0
+
+    logger.info(
+        f"[PERCEIVE] Page captured: url={url}, "
+        f"dom_length={len(dom_snapshot)} chars, "
+        f"~{element_count} interactive elements, "
+        f"screenshot={screenshot_size // 1024}KB"
+    )
 
     return Perception(
         url=url,

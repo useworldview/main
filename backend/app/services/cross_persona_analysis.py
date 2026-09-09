@@ -87,6 +87,8 @@ async def synthesize_study(payload: dict) -> None:
     study_id = payload["study_id"]
     sb = get_supabase_client()
 
+    logger.info(f"[SYNTHESIS] Starting cross-persona synthesis for study={study_id[:8]}")
+
     # Get study
     study = sb.table("studies").select("*").eq("id", study_id).single().execute().data
     site_context = study.get("site_context", {})
@@ -160,12 +162,17 @@ async def synthesize_study(payload: dict) -> None:
             persona_summaries.append(summary)
 
     if not persona_summaries:
-        logger.warning(f"No persona data for study {study_id}, marking as failed")
+        logger.warning(f"[SYNTHESIS] No persona data for study {study_id[:8]}, marking as failed")
         sb.table("studies").update({
             "status": "failed",
             "error_message": "No persona sessions produced analyzable data",
         }).eq("id", study_id).execute()
         return
+
+    logger.info(
+        f"[SYNTHESIS] Loaded data: {len(persona_summaries)} persona sessions, "
+        f"{len(all_findings)} findings, {len(all_decisions)} decisions"
+    )
 
     # Prepare prompt
     goals_text = "\n".join(f"- {g.get('value', g.get('type', ''))}" for g in research_goals)
@@ -206,7 +213,7 @@ async def synthesize_study(payload: dict) -> None:
                 "segment_filter": None,
             }).execute()
         except Exception as e:
-            logger.warning(f"Failed to insert insight: {e}")
+            logger.warning(f"[SYNTHESIS] Failed to insert insight: {e}")
 
     segment_insights = result.get("segment_insights", [])
     for insight in segment_insights:
@@ -219,7 +226,7 @@ async def synthesize_study(payload: dict) -> None:
                 "segment_filter": insight.get("segment"),
             }).execute()
         except Exception as e:
-            logger.warning(f"Failed to insert segment insight: {e}")
+            logger.warning(f"[SYNTHESIS] Failed to insert segment insight: {e}")
 
     # Store summary metrics
     summary_metrics = result.get("summary_metrics", {})
@@ -237,8 +244,8 @@ async def synthesize_study(payload: dict) -> None:
     }).eq("id", study_id).execute()
 
     logger.info(
-        f"Study synthesis complete for {study_id}: "
-        f"{len(study_wide)} study-wide, {len(segment_insights)} segment insights"
+        f"[SYNTHESIS] Insights generated: "
+        f"{len(study_wide)} study-wide, {len(segment_insights)} segment-level"
     )
 
     # Generate recommendations
@@ -258,7 +265,7 @@ async def synthesize_study(payload: dict) -> None:
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", study_id).execute()
 
-    logger.info(f"Study {study_id} synthesis and recommendations complete")
+    logger.info(f"[SYNTHESIS] ✅ Study {study_id[:8]} synthesis and recommendations COMPLETE")
 
 
 def _compute_metrics_from_data(sessions: list[dict], findings: list[dict]) -> dict:

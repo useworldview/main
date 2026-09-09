@@ -34,28 +34,40 @@ async def analyze_site(payload: dict) -> None:
     sb = get_supabase_client()
 
     # Update status
+    logger.info(f"[SITE_ANALYSIS] Starting analysis for study={study_id[:8]}, url={target_url}")
     sb.table("studies").update({
         "status": "analyzing_site",
     }).eq("id", study_id).execute()
 
     try:
         # Step 1: Check robots.txt
+        logger.info(f"[SITE_ANALYSIS] Step 1/4: Checking robots.txt for {target_url}")
         is_allowed = await check_robots_txt(target_url)
         if not is_allowed:
             sb.table("studies").update({
                 "status": "failed",
                 "error_message": "Target site disallows automated access via robots.txt",
             }).eq("id", study_id).execute()
+            logger.warning(f"[SITE_ANALYSIS] Blocked by robots.txt for {target_url}")
             return
 
         # Step 2: Fetch and parse the target URL
+        logger.info(f"[SITE_ANALYSIS] Step 2/4: Fetching site content from {target_url}")
         site_content = await fetch_site_content(target_url)
         if not site_content:
             sb.table("studies").update({
                 "status": "failed",
                 "error_message": "Failed to fetch target URL — site may be unreachable or blocking automated access",
             }).eq("id", study_id).execute()
+            logger.error(f"[SITE_ANALYSIS] ❌ Failed to fetch content from {target_url}")
             return
+
+        logger.info(
+            f"[SITE_ANALYSIS] Fetched site: title='{site_content.get('title', '?')}', "
+            f"headings={len(site_content.get('headings', []))}, "
+            f"nav_links={len(site_content.get('nav_links', []))}, "
+            f"text_length={len(site_content.get('main_text', ''))}"
+        )
 
         # Step 3: Clean content for LLM (strip scripts, styles, tracking)
         cleaned_content = _clean_content_for_llm(site_content["raw_html"])
@@ -68,14 +80,16 @@ async def analyze_site(payload: dict) -> None:
             "url": target_url,
         }
 
-        # Step 4: Detect audience segments via LLM
+        # Step 3: Detect audience segments via LLM
+        logger.info(f"[SITE_ANALYSIS] Step 3/4: Detecting audience segments via LLM...")
         segments = await detect_audience_segments(
             site_context=site_context,
             research_goals=research_goals,
             study_id=study_id,
         )
 
-        # Step 5: Insert audience segments
+        # Step 4: Insert audience segments
+        logger.info(f"[SITE_ANALYSIS] Step 4/4: Inserting {len(segments)} audience segments")
         for segment in segments:
             sb.table("audience_segments").insert({
                 "study_id": study_id,
@@ -90,10 +104,10 @@ async def analyze_site(payload: dict) -> None:
             "status": "audience_ready",
         }).eq("id", study_id).execute()
 
-        logger.info(f"Site analysis complete for study {study_id}: {len(segments)} segments detected")
+        logger.info(f"[SITE_ANALYSIS] ✅ Site analysis complete for study {study_id[:8]}: {len(segments)} segments detected")
 
     except Exception as e:
-        logger.error(f"Site analysis failed for study {study_id}: {e}")
+        logger.error(f"[SITE_ANALYSIS] ❌ Site analysis FAILED for study {study_id[:8]}: {type(e).__name__}: {e}", exc_info=True)
         sb.table("studies").update({
             "status": "failed",
             "error_message": f"Site analysis failed: {str(e)}",
@@ -139,7 +153,7 @@ async def check_robots_txt(target_url: str) -> bool:
         return True
 
     except Exception as e:
-        logger.warning(f"Failed to check robots.txt for {target_url}: {e}")
+        logger.warning(f"[SITE_ANALYSIS] Failed to check robots.txt for {target_url}: {e}")
         return True  # Assume allowed on error
 
 
@@ -152,7 +166,7 @@ async def fetch_site_content(target_url: str) -> Optional[dict]:
 
     if content and len(content.get("main_text", "")) < 100:
         # Content looks too short — might be JS-rendered, try Playwright
-        logger.info("Content looks JS-rendered, falling back to Playwright...")
+        logger.info("[SITE_ANALYSIS] Content looks JS-rendered (<100 chars), falling back to Playwright...")
         playwright_content = await _fetch_with_playwright(target_url)
         if playwright_content:
             content = playwright_content
@@ -173,13 +187,13 @@ async def _fetch_with_httpx(target_url: str) -> Optional[dict]:
             response = await client.get(target_url)
 
         if response.status_code != 200:
-            logger.warning(f"HTTP {response.status_code} for {target_url}")
+            logger.warning(f"[SITE_ANALYSIS] HTTP {response.status_code} for {target_url}")
             return None
 
         return _parse_html(response.text, target_url)
 
     except Exception as e:
-        logger.warning(f"httpx fetch failed for {target_url}: {e}")
+        logger.warning(f"[SITE_ANALYSIS] httpx fetch failed for {target_url}: {type(e).__name__}: {e}")
         return None
 
 
@@ -200,7 +214,7 @@ async def _fetch_with_playwright(target_url: str) -> Optional[dict]:
         return _parse_html(html, target_url)
 
     except Exception as e:
-        logger.warning(f"Playwright fetch failed for {target_url}: {e}")
+        logger.warning(f"[SITE_ANALYSIS] Playwright fetch failed for {target_url}: {type(e).__name__}: {e}")
         return None
 
 

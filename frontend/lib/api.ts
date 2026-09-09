@@ -92,3 +92,17 @@ export async function retryFailedSessions(studyId: string) {
   }
   return res.json();
 }
+
+export async function cancelStudy(studyId: string) {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${BACKEND_URL}/api/studies/${studyId}/cancel`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to cancel study' }));
+    throw new Error(error.detail || 'Failed to cancel study');
+  }
+  return res.json();
+}

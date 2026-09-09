@@ -28,7 +28,10 @@ class BrowserDriver:
 
     async def launch(self) -> None:
         """Launch a headless browser and create a page."""
+        import time as _time
+        _start = _time.time()
         settings = get_settings()
+        logger.info(f"[BROWSER] Launching Chromium (headless={settings.playwright_headless})...")
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=settings.playwright_headless,
@@ -42,9 +45,11 @@ class BrowserDriver:
         self._page = await self._context.new_page()
         self._page.set_default_timeout(30000)
         self._page.set_default_navigation_timeout(30000)
+        logger.info(f"[BROWSER] ✅ Chromium launched in {_time.time() - _start:.1f}s")
 
     async def close(self) -> None:
         """Close the browser and all contexts."""
+        logger.info("[BROWSER] Closing browser...")
         try:
             if self._context:
                 await self._context.close()
@@ -52,18 +57,26 @@ class BrowserDriver:
                 await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
+            logger.info("[BROWSER] Browser closed")
         except Exception as e:
-            logger.warning(f"Error closing browser: {e}")
+            logger.warning(f"[BROWSER] Error closing browser: {e}")
 
     async def navigate(self, url: str) -> bool:
         """Navigate to a URL. Returns True on success."""
+        logger.info(f"[BROWSER] Navigating to {url}...")
         try:
             response = await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
             # Wait for initial content to render
             await self._page.wait_for_load_state("networkidle", timeout=10000)
-            return response is not None and response.status < 400
+            success = response is not None and response.status < 400
+            if success:
+                logger.info(f"[BROWSER] ✅ Navigation success: {url} (HTTP {response.status})")
+            else:
+                status = response.status if response else 'no response'
+                logger.warning(f"[BROWSER] ❌ Navigation failed: {url} (HTTP {status})")
+            return success
         except Exception as e:
-            logger.warning(f"Navigation to {url} failed: {e}")
+            logger.error(f"[BROWSER] ❌ Navigation to {url} failed: {type(e).__name__}: {e}")
             return False
 
     async def take_screenshot(self) -> str:
@@ -75,7 +88,7 @@ class BrowserDriver:
             )
             return base64.b64encode(screenshot_bytes).decode("utf-8")
         except Exception as e:
-            logger.error(f"Screenshot failed: {e}")
+            logger.error(f"[BROWSER] Screenshot failed: {e}")
             return ""
 
     async def take_screenshot_bytes(self) -> bytes:
@@ -83,7 +96,7 @@ class BrowserDriver:
         try:
             return await self._page.screenshot(type="png", full_page=False)
         except Exception as e:
-            logger.error(f"Screenshot bytes failed: {e}")
+            logger.error(f"[BROWSER] Screenshot bytes failed: {e}")
             return b""
 
     async def get_dom_snapshot(self) -> str:
@@ -162,7 +175,7 @@ class BrowserDriver:
             return self._format_snapshot(snapshot)
 
         except Exception as e:
-            logger.error(f"DOM snapshot failed: {e}")
+            logger.error(f"[BROWSER] DOM snapshot failed: {type(e).__name__}: {e}")
             return "Failed to capture DOM snapshot"
 
     def _format_snapshot(self, snapshot: dict) -> str:
@@ -258,7 +271,7 @@ class BrowserDriver:
                 return True
 
         except Exception as e:
-            logger.warning(f"Click on element {index} failed: {e}")
+            logger.warning(f"[BROWSER] Click on element {index} failed: {type(e).__name__}: {e}")
             return False
 
     async def type_text(self, index: int, text: str) -> bool:
@@ -276,7 +289,7 @@ class BrowserDriver:
             return False
 
         except Exception as e:
-            logger.warning(f"Type into element {index} failed: {e}")
+            logger.warning(f"[BROWSER] Type into element {index} failed: {type(e).__name__}: {e}")
             return False
 
     async def scroll_down(self) -> bool:
@@ -286,7 +299,7 @@ class BrowserDriver:
             await self._page.wait_for_timeout(500)
             return True
         except Exception as e:
-            logger.warning(f"Scroll failed: {e}")
+            logger.warning(f"[BROWSER] Scroll down failed: {e}")
             return False
 
     async def scroll_up(self) -> bool:
@@ -296,7 +309,7 @@ class BrowserDriver:
             await self._page.wait_for_timeout(500)
             return True
         except Exception as e:
-            logger.warning(f"Scroll failed: {e}")
+            logger.warning(f"[BROWSER] Scroll up failed: {e}")
             return False
 
     async def go_back(self) -> bool:
@@ -305,7 +318,7 @@ class BrowserDriver:
             await self._page.go_back(wait_until="domcontentloaded", timeout=10000)
             return True
         except Exception as e:
-            logger.warning(f"Go back failed: {e}")
+            logger.warning(f"[BROWSER] Go back failed: {e}")
             return False
 
     async def go_forward(self) -> bool:
@@ -314,7 +327,7 @@ class BrowserDriver:
             await self._page.go_forward(wait_until="domcontentloaded", timeout=10000)
             return True
         except Exception as e:
-            logger.warning(f"Go forward failed: {e}")
+            logger.warning(f"[BROWSER] Go forward failed: {e}")
             return False
 
     async def get_current_url(self) -> str:
