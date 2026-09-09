@@ -1,0 +1,416 @@
+"""
+Agent session runner — the main perceive → decide → act → observe loop.
+This is the autonomous browsing engine that drives each persona's session.
+"""
+
+import logging
+import time
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+from urllib.parse import urlparse
+
+from app.core.config import get_settings
+from app.core.supabase_client import get_supabase_client
+from app.jobs.queue import enqueue_job
+from app.jobs.job_types import JobType
+from app.services.agent_session.browser_driver import BrowserDriver
+from app.services.agent_session.perceive import perceive
+from app.services.agent_session.decide import decide
+from app.services.agent_session.act import execute_action
+from app.services.agent_session.guardrails import (
+    check_robots_for_path,
+    enforce_rate_limit,
+    check_step_budget,
+    check_wall_clock_timeout,
+    check_for_bot_detection,
+    GuardrailViolation,
+    BotDetected,
+)
+
+logger = logging.getLogger(__name__)
+
+
+async def run_agent_session(payload: dict) -> None:
+    """
+    Main agent session runner.
+    
+    1. Launch browser, navigate to target URL
+    2. Loop (bounded by step budget AND wall-clock timeout):
+       - Perceive current state
+       - Decide next action
+       - Guardrail check
+       - Act
+       - Log interaction_events row + upload screenshot
+       - Update session memory
+    3. On completion: write terminal state, enqueue analyze_session
+    """
+    session_id = payload["session_id"]
+    study_id = payload["study_id"]
+    persona_id = payload["persona_id"]
+    target_url = payload["target_url"]
+    step_budget = payload.get("step_budget", 40)
+    max_pages = payload.get("max_pages", 5)
+
+    sb = get_supabase_client()
+    settings = get_settings()
+    wall_clock_timeout = settings.session_wall_clock_timeout_seconds
+
+    # Get persona data
+    persona_result = sb.table("personas").select("*").eq("id", persona_id).single().execute()
+    persona = persona_result.data
+
+    # Get study data for research goals
+    study_result = sb.table("studies").select("research_goals").eq("id", study_id).single().execute()
+    research_goals = study_result.data.get("research_goals", [])
+
+    # Update session status
+    sb.table("agent_sessions").update({
+        "status": "running",
+        "start_time": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", session_id).execute()
+
+    # Emit analytics event
+    _emit_event(sb, study_id, "agent_session_started", {"persona_id": persona_id})
+
+    driver = BrowserDriver()
+    session_history: list[dict] = []
+    pages_visited: set[str] = set()
+    step_count = 0
+    start_time = time.time()
+    outcome = "error"
+    outcome_reason = "Session did not complete normally"
+
+    try:
+        # Launch browser
+        await driver.launch()
+
+        # Check robots.txt for target URL
+        parsed = urlparse(target_url)
+        is_allowed = await check_robots_for_path(target_url, parsed.path or "/")
+        if not is_allowed:
+            outcome = "error"
+            outcome_reason = "Target site disallows automated access via robots.txt"
+            return
+
+        # Rate limit check
+        enforce_rate_limit(parsed.netloc)
+
+        # Navigate to target URL
+        nav_success = await driver.navigate(target_url)
+        if not nav_success:
+            outcome = "error"
+            outcome_reason = "Failed to load target URL"
+            return
+
+        pages_visited.add(target_url)
+
+        # Log initial navigation event
+        initial_perception = await perceive(driver)
+        await _log_event(
+            sb=sb,
+            session_id=session_id,
+            sequence_no=0,
+            event_type="navigate",
+            target_element=None,
+            page_url=target_url,
+            details={"type": "initial_navigation"},
+            screenshot_bytes=initial_perception.screenshot_bytes,
+            reasoning="Starting session — navigating to target URL",
+            study_id=study_id,
+        )
+
+        # ================================================================
+        # MAIN LOOP: perceive → decide → act → observe
+        # ================================================================
+        while True:
+            step_count += 1
+
+            # Guardrail checks
+            try:
+                check_step_budget(step_count, step_budget)
+                check_wall_clock_timeout(start_time, wall_clock_timeout)
+            except GuardrailViolation as e:
+                logger.info(f"Session {session_id} budget exhausted: {e}")
+                outcome = "completed"
+                outcome_reason = f"Session budget reached: {str(e)}"
+                break
+
+            # PERCEIVE
+            current_perception = await perceive(driver)
+            current_url = current_perception.url
+            pages_visited.add(current_url)
+
+            # Check for bot detection
+            try:
+                check_for_bot_detection(current_perception.dom_snapshot)
+            except BotDetected as e:
+                outcome = "error"
+                outcome_reason = f"Target site blocked automated access: {str(e)}"
+                await _log_event(
+                    sb=sb,
+                    session_id=session_id,
+                    sequence_no=step_count,
+                    event_type="page_error",
+                    target_element=None,
+                    page_url=current_url,
+                    details={"error": str(e), "type": "bot_detection"},
+                    screenshot_bytes=current_perception.screenshot_bytes,
+                    reasoning=str(e),
+                    study_id=study_id,
+                )
+                break
+
+            # Check robots.txt for new pages
+            parsed_current = urlparse(current_url)
+            if parsed_current.netloc == parsed.netloc:
+                is_allowed = await check_robots_for_path(current_url, parsed_current.path or "/")
+                if not is_allowed:
+                    logger.info(f"Path {parsed_current.path} disallowed by robots.txt, going back")
+                    await driver.go_back()
+                    continue
+
+            # DECIDE
+            decision = await decide(
+                persona=persona,
+                research_goals=research_goals,
+                perception_text=current_perception.to_prompt_text(),
+                session_history=session_history,
+                screenshot_base64=current_perception.screenshot_base64,
+                study_id=study_id,
+                session_id=session_id,
+            )
+
+            # Map action to event type
+            event_type = _map_action_to_event_type(decision.action)
+
+            # Check if session should end
+            if decision.is_terminal:
+                outcome = "completed" if decision.action == "complete" else "abandoned"
+                outcome_reason = decision.reasoning
+
+                await _log_event(
+                    sb=sb,
+                    session_id=session_id,
+                    sequence_no=step_count,
+                    event_type=event_type,
+                    target_element=str(decision.target) if decision.target else None,
+                    page_url=current_url,
+                    details={
+                        "thinking": decision.thinking,
+                        "feeling": decision.feeling,
+                        "outcome": outcome,
+                        "trust_signal": decision.trust_signal,
+                        "like_or_dislike": decision.like_or_dislike,
+                    },
+                    screenshot_bytes=current_perception.screenshot_bytes,
+                    reasoning=decision.reasoning,
+                    study_id=study_id,
+                )
+
+                # Add to session history
+                session_history.append({
+                    "step": step_count,
+                    "action": decision.action,
+                    "url": current_url,
+                    "reasoning": decision.reasoning,
+                    "feeling": decision.feeling,
+                    "thinking": decision.thinking,
+                })
+
+                break
+
+            # ACT
+            enforce_rate_limit(parsed.netloc, min_delay_seconds=0.5)
+            action_result = await execute_action(driver, decision)
+
+            # Check for page errors after action
+            if not action_result.get("success", False) and not action_result.get("blocked", False):
+                # Log page error
+                await _log_event(
+                    sb=sb,
+                    session_id=session_id,
+                    sequence_no=step_count,
+                    event_type="page_error",
+                    target_element=str(decision.target) if decision.target else None,
+                    page_url=current_url,
+                    details={
+                        "error": action_result.get("details", {}).get("error", "Action failed"),
+                        "action_attempted": decision.action,
+                        "thinking": decision.thinking,
+                    },
+                    screenshot_bytes=current_perception.screenshot_bytes,
+                    reasoning=f"Action failed: {action_result.get('details', {}).get('error', 'unknown')}",
+                    study_id=study_id,
+                )
+            else:
+                # Log successful action
+                event_details = {
+                    "thinking": decision.thinking,
+                    "feeling": decision.feeling,
+                    "action_result": action_result.get("details", {}),
+                    "trust_signal": decision.trust_signal,
+                    "like_or_dislike": decision.like_or_dislike,
+                }
+
+                if action_result.get("blocked"):
+                    event_details["guardrail_blocked"] = True
+                    event_details["block_reason"] = action_result.get("details", {}).get("reason", "")
+
+                await _log_event(
+                    sb=sb,
+                    session_id=session_id,
+                    sequence_no=step_count,
+                    event_type=event_type,
+                    target_element=str(decision.target) if decision.target else None,
+                    page_url=current_url,
+                    details=event_details,
+                    screenshot_bytes=current_perception.screenshot_bytes,
+                    reasoning=decision.reasoning,
+                    study_id=study_id,
+                )
+
+            # Update session memory
+            session_history.append({
+                "step": step_count,
+                "action": decision.action,
+                "url": current_url,
+                "reasoning": decision.reasoning,
+                "feeling": decision.feeling,
+                "thinking": decision.thinking,
+                "target": str(decision.target) if decision.target else None,
+                "success": action_result.get("success", False),
+                "blocked": action_result.get("blocked", False),
+            })
+
+            # Update step count in DB periodically (every 5 steps)
+            if step_count % 5 == 0:
+                sb.table("agent_sessions").update({
+                    "step_count": step_count,
+                    "pages_visited": len(pages_visited),
+                }).eq("id", session_id).execute()
+
+    except Exception as e:
+        logger.error(f"Agent session {session_id} crashed: {e}", exc_info=True)
+        outcome = "error"
+        outcome_reason = f"Session crashed: {str(e)}"
+
+    finally:
+        # Close browser
+        await driver.close()
+
+        # Update session with final state
+        end_time = datetime.now(timezone.utc).isoformat()
+        sb.table("agent_sessions").update({
+            "status": "completed" if outcome != "error" else "failed",
+            "end_time": end_time,
+            "step_count": step_count,
+            "outcome": outcome,
+            "outcome_reason": outcome_reason,
+            "pages_visited": len(pages_visited),
+        }).eq("id", session_id).execute()
+
+        # Emit analytics event
+        _emit_event(sb, study_id, "agent_session_completed" if outcome != "error" else "agent_session_failed", {
+            "persona_id": persona_id,
+            "session_id": session_id,
+            "outcome": outcome,
+            "step_count": step_count,
+            "pages_visited": len(pages_visited),
+            "duration_seconds": round(time.time() - start_time),
+        })
+
+        # Enqueue post-session analysis (only if we got at least some events)
+        if step_count > 0:
+            enqueue_job(
+                job_type=JobType.ANALYZE_SESSION,
+                payload={
+                    "session_id": session_id,
+                    "study_id": study_id,
+                    "persona_id": persona_id,
+                },
+            )
+
+        logger.info(
+            f"Session {session_id} finished: outcome={outcome}, "
+            f"steps={step_count}, pages={len(pages_visited)}, "
+            f"duration={time.time() - start_time:.1f}s"
+        )
+
+
+async def _log_event(
+    sb,
+    session_id: str,
+    sequence_no: int,
+    event_type: str,
+    target_element: Optional[str],
+    page_url: str,
+    details: dict,
+    screenshot_bytes: bytes,
+    reasoning: str,
+    study_id: str,
+) -> None:
+    """Log an interaction event and upload screenshot to Supabase Storage."""
+    screenshot_ref = None
+
+    # Upload screenshot to storage
+    if screenshot_bytes:
+        try:
+            filename = f"{study_id}/{session_id}/step_{sequence_no:04d}.png"
+            sb.storage.from_("screenshots").upload(
+                filename,
+                screenshot_bytes,
+                {"content-type": "image/png"},
+            )
+            screenshot_ref = filename
+        except Exception as e:
+            logger.warning(f"Failed to upload screenshot: {e}")
+
+    # Clean details — remove None values
+    clean_details = {k: v for k, v in details.items() if v is not None}
+
+    sb.table("interaction_events").insert({
+        "session_id": session_id,
+        "sequence_no": sequence_no,
+        "event_type": event_type,
+        "target_element": target_element,
+        "page_url": page_url,
+        "details": clean_details,
+        "screenshot_ref": screenshot_ref,
+        "reasoning": reasoning,
+    }).execute()
+
+
+def _map_action_to_event_type(action: str) -> str:
+    """Map an agent action to an interaction_events event_type."""
+    mapping = {
+        "click": "click",
+        "type": "type",
+        "scroll_down": "scroll",
+        "scroll_up": "scroll",
+        "back": "back",
+        "forward": "forward",
+        "navigate": "navigate",
+        "complete": "navigate",  # Terminal actions get logged as navigate
+        "abandon": "navigate",
+        "search": "search",
+        "wait": "wait",
+    }
+    return mapping.get(action, "click")
+
+
+def _emit_event(sb, study_id: str, event_name: str, properties: dict) -> None:
+    """Emit an analytics event."""
+    try:
+        # Get user_id from study
+        study = sb.table("studies").select("user_id").eq("id", study_id).single().execute().data
+        user_id = study.get("user_id") if study else None
+
+        sb.table("analytics_events").insert({
+            "user_id": user_id,
+            "study_id": study_id,
+            "event_name": event_name,
+            "properties": properties,
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Failed to emit analytics event: {e}")
