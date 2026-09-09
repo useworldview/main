@@ -159,7 +159,7 @@ export default function PersonaDetailPage() {
                 <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2">Goals</p>
                 <div className="flex flex-wrap gap-1.5">
                   {persona.worldview.goals.map((g, i) => (
-                    <span key={i} className="badge badge-brand">{g}</span>
+                    <span key={i} className="badge badge-brand">{formatTraitValue(g)}</span>
                   ))}
                 </div>
               </div>
@@ -170,7 +170,7 @@ export default function PersonaDetailPage() {
                 <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2">Fears</p>
                 <div className="flex flex-wrap gap-1.5">
                   {persona.worldview.fears.map((f, i) => (
-                    <span key={i} className="badge badge-error">{f}</span>
+                    <span key={i} className="badge badge-error">{formatTraitValue(f)}</span>
                   ))}
                 </div>
               </div>
@@ -188,19 +188,19 @@ export default function PersonaDetailPage() {
                 {persona.situational_context.reason_for_visiting && (
                   <div>
                     <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Why visiting</p>
-                    <p className="text-surface-600">{persona.situational_context.reason_for_visiting}</p>
+                    <p className="text-surface-600">{formatTraitValue(persona.situational_context.reason_for_visiting)}</p>
                   </div>
                 )}
                 {persona.situational_context.objective && (
                   <div>
                     <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Objective</p>
-                    <p className="text-surface-600">{persona.situational_context.objective}</p>
+                    <p className="text-surface-600">{formatTraitValue(persona.situational_context.objective)}</p>
                   </div>
                 )}
                 {persona.situational_context.current_situation && (
                   <div>
                     <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Situation</p>
-                    <p className="text-surface-600">{persona.situational_context.current_situation}</p>
+                    <p className="text-surface-600">{formatTraitValue(persona.situational_context.current_situation)}</p>
                   </div>
                 )}
               </div>
@@ -362,11 +362,33 @@ export default function PersonaDetailPage() {
   );
 }
 
-function WorldviewItem({ label, value }: { label: string; value: string }) {
+function formatTraitValue(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' || typeof val === 'number') return String(val);
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>;
+    if (obj.score !== undefined && obj.explanation) {
+      return `${obj.score}/10 — ${obj.explanation}`;
+    }
+    if (obj.score !== undefined) return `${obj.score}/10`;
+    if (obj.level !== undefined) return `${obj.level}/10`;
+    if (obj.value !== undefined) return String(obj.value);
+    if (obj.explanation) return String(obj.explanation);
+    if (obj.description) return String(obj.description);
+    return (
+      Object.values(obj)
+        .filter((v) => typeof v === 'string' || typeof v === 'number')
+        .join(' - ') || ''
+    );
+  }
+  return String(val);
+}
+
+function WorldviewItem({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-surface-500">{label}</span>
-      <span className="text-surface-800 font-medium text-right">{value}</span>
+      <span className="text-surface-800 font-medium text-right">{formatTraitValue(value)}</span>
     </div>
   );
 }

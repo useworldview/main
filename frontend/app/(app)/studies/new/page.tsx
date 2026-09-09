@@ -37,6 +37,28 @@ export default function StudyWizardPage() {
   );
 }
 
+function formatTraitValue(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' || typeof val === 'number') return String(val);
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>;
+    if (obj.score !== undefined && obj.explanation) {
+      return `${obj.score}/10 — ${obj.explanation}`;
+    }
+    if (obj.score !== undefined) return `${obj.score}/10`;
+    if (obj.level !== undefined) return `${obj.level}/10`;
+    if (obj.value !== undefined) return String(obj.value);
+    if (obj.explanation) return String(obj.explanation);
+    if (obj.description) return String(obj.description);
+    return (
+      Object.values(obj)
+        .filter((v) => typeof v === 'string' || typeof v === 'number')
+        .join(' - ') || ''
+    );
+  }
+  return String(val);
+}
+
 function StudyWizardInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -660,25 +682,25 @@ function StudyWizardInner() {
                     <div className="space-y-2 text-xs">
                       {persona.worldview?.trust_level && (
                         <div className="flex items-center gap-2">
-                          <Shield className="w-3.5 h-3.5 text-surface-400" />
-                          <span className="text-surface-500">Trust: <strong className="text-surface-700">{persona.worldview.trust_level}</strong></span>
+                          <Shield className="w-3.5 h-3.5 text-surface-400 flex-shrink-0" />
+                          <span className="text-surface-500">Trust: <strong className="text-surface-700">{formatTraitValue(persona.worldview.trust_level)}</strong></span>
                         </div>
                       )}
                       {persona.worldview?.digital_literacy && (
                         <div className="flex items-center gap-2">
-                          <Sparkles className="w-3.5 h-3.5 text-surface-400" />
-                          <span className="text-surface-500">Digital literacy: <strong className="text-surface-700">{persona.worldview.digital_literacy}</strong></span>
+                          <Sparkles className="w-3.5 h-3.5 text-surface-400 flex-shrink-0" />
+                          <span className="text-surface-500">Digital literacy: <strong className="text-surface-700">{formatTraitValue(persona.worldview.digital_literacy)}</strong></span>
                         </div>
                       )}
                       {persona.worldview?.price_sensitivity && (
                         <div className="flex items-center gap-2">
-                          <Target className="w-3.5 h-3.5 text-surface-400" />
-                          <span className="text-surface-500">Price sensitivity: <strong className="text-surface-700">{persona.worldview.price_sensitivity}</strong></span>
+                          <Target className="w-3.5 h-3.5 text-surface-400 flex-shrink-0" />
+                          <span className="text-surface-500">Price sensitivity: <strong className="text-surface-700">{formatTraitValue(persona.worldview.price_sensitivity)}</strong></span>
                         </div>
                       )}
                       {persona.situational_context?.reason_for_visiting && (
                         <p className="text-surface-500 mt-2 italic border-l-2 border-brand-200 pl-3 py-1">
-                          &quot;{persona.situational_context.reason_for_visiting}&quot;
+                          &quot;{typeof persona.situational_context.reason_for_visiting === 'object' ? formatTraitValue(persona.situational_context.reason_for_visiting) : String(persona.situational_context.reason_for_visiting)}&quot;
                         </p>
                       )}
                     </div>
