@@ -153,7 +153,7 @@ async def _call_gemini(
 
 async def _call_openrouter(
     messages: list[dict],
-    model: str = "meta-llama/llama-3.3-70b-instruct",
+    model: str = "openrouter/free",
     temperature: float = 0.7,
     max_tokens: int = 4096,
     response_format: Optional[dict] = None,
