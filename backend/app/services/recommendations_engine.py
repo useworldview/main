@@ -46,9 +46,9 @@ For each recommendation, also estimate:
 5. Don't recommend things that would require completely rebuilding the product — focus on actionable, incremental improvements
 
 Respond in JSON:
-{
+{{
     "recommendations": [
-        {
+        {{
             "problem": "...",
             "evidence": "...",
             "affected_users": "...",
@@ -57,9 +57,9 @@ Respond in JSON:
             "severity": "high|medium|low",
             "affected_persona_count": 6,
             "total_persona_count": 10
-        }
+        }}
     ]
-}"""
+}}"""
 
 SEVERITY_WEIGHTS = {
     "high": 1.0,

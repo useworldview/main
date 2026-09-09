@@ -51,7 +51,7 @@ You can take ONE of these actions:
 - **abandon**: You're leaving because of frustration, confusion, distrust, or inability to find what you need
 
 ## Response Format (JSON)
-{
+{{
     "thinking": "Your internal monologue as this persona — what you're noticing, feeling, wondering. 2-3 sentences.",
     "feeling": "One of: confused, interested, excited, frustrated, suspicious, confident, overwhelmed, curious, uncertain, satisfied",
     "action": "click | type | scroll_down | scroll_up | back | forward | navigate | complete | abandon",
@@ -60,7 +60,7 @@ You can take ONE of these actions:
     "reasoning": "Why you chose this action, from your persona's perspective. 1-2 sentences.",
     "trust_signal": "optional — if you noticed something that increased or decreased your trust, describe it",
     "like_or_dislike": "optional — if something on this page particularly impressed or bothered you, describe it"
-}"""
+}}"""
 
 
 class AgentDecision:

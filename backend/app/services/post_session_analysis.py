@@ -60,23 +60,23 @@ For each major decision point (signing up, purchasing, using a feature, abandoni
 5. Write from the PERSONA'S perspective, not a generic analyst's
 
 Respond in JSON:
-{
+{{
     "findings": [
-        {
+        {{
             "type": "like|dislike|feeling|trust|distrust",
             "feeling_label": "null or one of the defined labels",
             "description": "specific, evidence-backed finding",
             "linked_event_ids": ["event-id-1", "event-id-2"]
-        }
+        }}
     ],
     "decision_explanations": [
-        {
+        {{
             "decision_type": "signup|purchase|feature_use|abandon|other",
             "rationale_text": "detailed explanation",
             "linked_event_ids": ["event-id-1"]
-        }
+        }}
     ]
-}"""
+}}"""
 
 
 async def analyze_session(payload: dict) -> None:

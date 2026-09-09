@@ -49,30 +49,30 @@ Compute these as plain ratios:
 For each metric, also provide the numerator and denominator so the frontend can show "X/Y" not just a bare number.
 
 Respond in JSON:
-{
+{{
     "study_wide_insights": [
-        {
+        {{
             "statement": "7/10 personas found the navigation intuitive and could reach key pages within 2 clicks",
             "supporting_count": 7,
             "total_count": 10
-        }
+        }}
     ],
     "segment_insights": [
-        {
+        {{
             "statement": "Non-technical personas (3/4) struggled with the API documentation, while technical personas (4/4) found it clear",
             "supporting_count": 3,
             "total_count": 4,
             "segment": "Non-Technical Users"
-        }
+        }}
     ],
-    "summary_metrics": {
-        "trust_score": {"value": 0.75, "numerator": 6, "denominator": 8, "label": "Trust Score"},
-        "usability_score": {"value": 0.60, "numerator": 9, "denominator": 15, "label": "Usability Score"},
-        "task_completion_rate": {"value": 0.80, "numerator": 8, "denominator": 10, "label": "Task Completion Rate"},
-        "conversion_intent": {"value": 0.70, "numerator": 7, "denominator": 10, "label": "Conversion Intent"},
-        "value_prop_clarity": {"value": 0.85, "numerator": null, "denominator": null, "label": "Value Prop Clarity"}
-    }
-}"""
+    "summary_metrics": {{
+        "trust_score": {{"value": 0.75, "numerator": 6, "denominator": 8, "label": "Trust Score"}},
+        "usability_score": {{"value": 0.60, "numerator": 9, "denominator": 15, "label": "Usability Score"}},
+        "task_completion_rate": {{"value": 0.80, "numerator": 8, "denominator": 10, "label": "Task Completion Rate"}},
+        "conversion_intent": {{"value": 0.70, "numerator": 7, "denominator": 10, "label": "Conversion Intent"}},
+        "value_prop_clarity": {{"value": 0.85, "numerator": null, "denominator": null, "label": "Value Prop Clarity"}}
+    }}
+}}"""
 
 
 async def synthesize_study(payload: dict) -> None:
