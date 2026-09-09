@@ -141,3 +141,14 @@ python worker_entrypoint.py
 curl http://localhost:8000/api/health
 # → {"status": "ok"}
 ```
+
+---
+
+## 7. Git Repository & Deployment
+
+The codebase has been initialized and force-pushed to GitHub:
+- **Repository URL**: [https://github.com/useworldview/main.git](https://github.com/useworldview/main.git)
+- **Branch**: `main`
+- **Commit**: `87505b6` (`feat: complete UseWorldview v1 codebase (backend + frontend)`)
+- **Included**: All 85 source files across `backend/`, `frontend/`, migrations, documentation, and specs.
+- **Excluded**: Secrets (`.env`, `.env.local`), virtual environments (`backend/venv`), dependencies (`node_modules`), `.DS_Store`, build caches.
