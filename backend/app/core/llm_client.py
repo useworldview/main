@@ -61,7 +61,7 @@ def _estimate_cost(provider: str, input_tokens: int, output_tokens: int) -> floa
 
 async def _call_groq(
     messages: list[dict],
-    model: str = "llama-3.3-70b-versatile",
+    model: str = "openai/gpt-oss-20b",
     temperature: float = 0.7,
     max_tokens: int = 4096,
     response_format: Optional[dict] = None,
@@ -250,6 +250,46 @@ _PROVIDERS = {
 }
 
 
+# Counter for round-robin load distribution across available providers
+_rr_counter = 0
+
+
+def _get_ordered_providers() -> list[str]:
+    """
+    Get available providers ordered with round-robin load distribution.
+
+    If multiple providers are configured (e.g. both Groq and OpenRouter),
+    alternates the primary provider on each request (Groq -> OpenRouter -> Groq -> ...)
+    so traffic is evenly split and neither hits '429 Too Many Requests'.
+    The other provider acts as the immediate fallback.
+
+    If only one provider is configured, that single provider is used.
+    """
+    global _rr_counter
+    settings = get_settings()
+
+    configured = []
+    for p in settings.llm_providers:
+        if p == "groq" and settings.groq_api_key:
+            configured.append("groq")
+        elif p == "openrouter" and settings.openrouter_api_key:
+            configured.append("openrouter")
+        elif p == "gemini" and settings.gemini_api_key:
+            configured.append("gemini")
+        elif p == "claude" and settings.anthropic_api_key:
+            configured.append("claude")
+
+    if not configured:
+        return settings.llm_providers
+
+    if len(configured) == 1:
+        return configured
+
+    idx = _rr_counter % len(configured)
+    _rr_counter += 1
+    return configured[idx:] + configured[:idx]
+
+
 async def call_llm(
     messages: list[dict],
     purpose: str,
@@ -280,8 +320,8 @@ async def call_llm(
     Raises:
         RuntimeError: If all providers fail
     """
-    settings = get_settings()
-    providers = settings.llm_providers
+    providers = _get_ordered_providers()
+    logger.info(f"[LLM] Provider priority for purpose='{purpose}': {providers}")
     errors = []
 
     for provider_name in providers:
@@ -354,19 +394,19 @@ async def call_llm_with_vision(
     Call an LLM with a vision-capable model, attaching an image.
     Uses a vision-specific fallback chain (only providers with vision support).
     """
-    settings = get_settings()
-    providers = settings.llm_providers
+    providers = _get_ordered_providers()
+    logger.info(f"[LLM] Vision provider priority for purpose='{purpose}': {providers}")
     errors = []
 
     # Build messages with image for each provider
     for provider_name in providers:
         try:
             if provider_name == "groq":
-                # Groq supports vision with llama-3.2-90b-vision-preview
+                # Groq supports vision with qwen/qwen3.8-27b
                 vision_messages = _build_vision_messages_openai_style(messages, image_base64)
                 response = await _call_groq(
                     messages=vision_messages,
-                    model="llama-3.2-90b-vision-preview",
+                    model="qwen/qwen3.8-27b",
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
@@ -385,7 +425,7 @@ async def call_llm_with_vision(
                 vision_messages = _build_vision_messages_openai_style(messages, image_base64)
                 response = await _call_openrouter(
                     messages=vision_messages,
-                    model="meta-llama/llama-3.2-90b-vision-instruct",
+                    model="nvidia/nemotron-nano-12b-vl:free",
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,
@@ -425,7 +465,7 @@ async def call_llm_with_vision(
     logger.critical(
         f"[LLM] 🚨 ALL VISION PROVIDERS FAILED for purpose='{purpose}'\n"
         f"[LLM] Errors:\n{error_detail}\n"
-        f"[LLM] 💡 Vision requires Groq (llama-3.2-90b-vision), Gemini, OpenRouter, or Claude."
+        f"[LLM] 💡 Vision requires Groq (qwen/qwen3.8-27b), Gemini, OpenRouter, or Claude."
     )
     raise RuntimeError(
         f"All vision LLM providers failed for purpose '{purpose}'. Errors:\n{error_detail}"

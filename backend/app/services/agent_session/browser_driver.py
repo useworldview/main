@@ -131,11 +131,15 @@ class BrowserDriver:
                         const ariaLabel = el.getAttribute('aria-label') || '';
                         const name = el.getAttribute('name') || '';
                         const id = el.getAttribute('id') || '';
+                        const className = el.getAttribute('class') || '';
+                        const title = el.getAttribute('title') || '';
+                        const hasIcon = el.querySelector('svg') !== null;
                         
                         elements.push({
                             tag, type, role, text: text.substring(0, 80),
                             href: href.substring(0, 200),
                             placeholder, ariaLabel, name, id,
+                            className, title, hasIcon,
                             x: Math.round(rect.x), y: Math.round(rect.y),
                             width: Math.round(rect.width), height: Math.round(rect.height),
                             visible: rect.top < window.innerHeight && rect.bottom > 0,
@@ -223,8 +227,18 @@ class BrowserDriver:
         placeholder = el.get("placeholder", "")
         aria_label = el.get("ariaLabel", "")
         name = el.get("name", "")
+        title = el.get("title", "")
+        class_name = el.get("className", "").lower()
+        has_icon = el.get("hasIcon", False)
 
-        label = text or aria_label or placeholder or name or ""
+        label = text or aria_label or placeholder or title or name or ""
+
+        # Special handling for icon-only buttons that might be close buttons
+        if not label:
+            if "close" in class_name or "dismiss" in class_name:
+                label = "Close Icon"
+            elif has_icon:
+                label = "Icon Button"
 
         if tag == "a":
             return f"Link: \"{label}\" → {href}" if href else f"Link: \"{label}\""
@@ -358,6 +372,9 @@ class BrowserDriver:
                         ariaLabel: el.getAttribute('aria-label') || '',
                         name: el.getAttribute('name') || '',
                         id: el.getAttribute('id') || '',
+                        className: el.getAttribute('class') || '',
+                        title: el.getAttribute('title') || '',
+                        hasIcon: el.querySelector('svg') !== null,
                         x: Math.round(rect.x), y: Math.round(rect.y),
                         width: Math.round(rect.width), height: Math.round(rect.height),
                         visible: rect.top < window.innerHeight && rect.bottom > 0,

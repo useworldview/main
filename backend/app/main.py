@@ -40,6 +40,19 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Playwright install check failed: {e}")
 
+    # Ensure screenshots bucket exists and is public
+    try:
+        from app.core.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        buckets = [b.name for b in sb.storage.list_buckets()]
+        if "screenshots" not in buckets:
+            sb.storage.create_bucket("screenshots", options={"public": True})
+            logger.info("Created 'screenshots' storage bucket (public=True)")
+        else:
+            sb.storage.update_bucket("screenshots", {"public": True})
+    except Exception as e:
+        logger.warning(f"Storage bucket check: {e}")
+
     yield
     logger.info("UseWorldview Backend shutting down")
 

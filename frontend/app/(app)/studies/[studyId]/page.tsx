@@ -64,7 +64,17 @@ export default function StudyResultsPage() {
     const channel = supabase
       .channel(`study-results-${studyId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'studies', filter: `id=eq.${studyId}` },
-        (payload) => { if (payload.new) setStudy(payload.new as Study); }
+        (payload) => { 
+          if (payload.new) {
+            const newStudy = payload.new as Study;
+            setStudy((prev) => {
+              if (prev && prev.status !== 'completed' && newStudy.status === 'completed') {
+                setTimeout(() => fetchAll(), 0);
+              }
+              return newStudy;
+            });
+          }
+        }
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_sessions', filter: `study_id=eq.${studyId}` },
         (payload) => {
@@ -153,6 +163,8 @@ export default function StudyResultsPage() {
                 setCancelling(true);
                 try {
                   await cancelStudy(studyId);
+                  setStudy(prev => prev ? { ...prev, status: 'failed' } : prev);
+                  setSessions(prev => prev.map(s => ['queued', 'running'].includes(s.status) ? { ...s, status: 'failed' } : s));
                 } catch (e) {
                   console.error('Failed to cancel:', e);
                 } finally {

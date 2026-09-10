@@ -72,6 +72,8 @@ export default function PersonaDetailPage() {
   const feelings = findings.filter(f => f.type === 'feeling');
   const trustSignals = findings.filter(f => f.type === 'trust');
   const distrustSignals = findings.filter(f => f.type === 'distrust');
+  const goals = ensureArray(persona.worldview?.goals);
+  const fears = ensureArray(persona.worldview?.fears);
 
   return (
     <div className="page-enter">
@@ -154,22 +156,22 @@ export default function PersonaDetailPage() {
               )}
             </div>
 
-            {persona.worldview?.goals && persona.worldview.goals.length > 0 && (
+            {goals.length > 0 && (
               <div className="mt-4 pt-4 border-t border-surface-100">
                 <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2">Goals</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {persona.worldview.goals.map((g, i) => (
+                  {goals.map((g, i) => (
                     <span key={i} className="badge badge-brand">{formatTraitValue(g)}</span>
                   ))}
                 </div>
               </div>
             )}
 
-            {persona.worldview?.fears && persona.worldview.fears.length > 0 && (
+            {fears.length > 0 && (
               <div className="mt-3">
                 <p className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2">Fears</p>
                 <div className="flex flex-wrap gap-1.5">
-                  {persona.worldview.fears.map((f, i) => (
+                  {fears.map((f, i) => (
                     <span key={i} className="badge badge-error">{formatTraitValue(f)}</span>
                   ))}
                 </div>
@@ -360,6 +362,23 @@ export default function PersonaDetailPage() {
       </div>
     </div>
   );
+}
+
+function ensureArray(val: unknown): unknown[] {
+  if (val === null || val === undefined) return [];
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return [];
+    if (trimmed.includes(',')) {
+      return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return [trimmed];
+  }
+  if (typeof val === 'object') {
+    return Object.values(val as Record<string, unknown>).filter(Boolean);
+  }
+  return [val];
 }
 
 function formatTraitValue(val: unknown): string {
