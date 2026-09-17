@@ -7,6 +7,7 @@ import base64
 import logging
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
 
@@ -342,6 +343,343 @@ class BrowserDriver:
             return True
         except Exception as e:
             logger.warning(f"[BROWSER] Go forward failed: {e}")
+            return False
+
+    async def dismiss_overlays(self) -> list[str]:
+        """
+        Auto-detect and dismiss common overlays/popups/banners via JS injection.
+        Returns a list of descriptions of what was dismissed.
+        
+        This is DETERMINISTIC — no LLM involved. Runs JS that:
+        1. Finds common consent/cookie/newsletter overlays by selectors & text
+        2. Clicks dismiss buttons (Accept, Close, X, Got it, etc.)
+        3. Falls back to hiding overlay elements if no button found
+        4. Handles common consent manager iframes (OneTrust, CookieBot, etc.)
+        """
+        try:
+            dismissed = await self._page.evaluate("""() => {
+                const dismissed = [];
+                
+                // ── PHASE 1: Click known dismiss buttons ──
+                // Common button texts for overlay dismiss (case-insensitive matching)
+                const dismissTexts = [
+                    'accept all', 'accept all cookies', 'accept cookies', 'accept',
+                    'agree', 'agree and continue', 'allow all', 'allow all cookies',
+                    'allow cookies', 'got it', 'i agree', 'i understand', 'ok',
+                    'okay', 'continue', 'dismiss', 'no thanks', 'not now',
+                    'close', 'reject all', 'decline', 'deny',
+                    'consent', 'i accept', 'understood',
+                ];
+                
+                // Common selectors for cookie/consent banners
+                const bannerSelectors = [
+                    '[class*="cookie-banner"]', '[class*="cookie-consent"]',
+                    '[class*="cookieBanner"]', '[class*="cookieConsent"]',
+                    '[class*="cookie_banner"]', '[class*="cookie_consent"]',
+                    '[class*="consent-banner"]', '[class*="consent-modal"]',
+                    '[class*="gdpr"]', '[class*="GDPR"]',
+                    '[class*="privacy-banner"]', '[class*="privacy-notice"]',
+                    '[id*="cookie"]', '[id*="consent"]', '[id*="gdpr"]',
+                    '[id*="onetrust"]', '[id*="OneTrust"]',
+                    '[id*="cookiebot"]', '[id*="CookieBot"]',
+                    '[class*="cc-banner"]', '[class*="cc-window"]',
+                    '[class*="cmp-banner"]', '[class*="cmp-modal"]',
+                    '[aria-label*="cookie"]', '[aria-label*="consent"]',
+                    '[role="dialog"]', '[role="alertdialog"]',
+                    '[class*="modal"]', '[class*="popup"]', '[class*="overlay"]',
+                    '[class*="newsletter"]', '[class*="subscribe-popup"]',
+                    '[class*="notification-bar"]', '[class*="announcement-bar"]',
+                ];
+                
+                // Find and click dismiss buttons within overlay containers
+                function tryClickDismissInContainer(container) {
+                    // Try buttons and links first
+                    const clickables = container.querySelectorAll(
+                        'button, a, [role="button"], input[type="button"], input[type="submit"], span[onclick], div[onclick]'
+                    );
+                    
+                    for (const el of clickables) {
+                        const text = (el.textContent || el.value || '').trim().toLowerCase();
+                        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const title = (el.getAttribute('title') || '').toLowerCase();
+                        const combined = text + ' ' + ariaLabel + ' ' + title;
+                        
+                        for (const dismissText of dismissTexts) {
+                            if (combined.includes(dismissText)) {
+                                try {
+                                    el.click();
+                                    dismissed.push('Clicked: "' + text.substring(0, 50) + '" in ' + container.tagName);
+                                    return true;
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                    
+                    // Try close buttons (X icons, close class, etc.)
+                    const closeSelectors = [
+                        '[class*="close"]', '[class*="dismiss"]', '[class*="reject"]',
+                        '[aria-label="close"]', '[aria-label="Close"]',
+                        '[aria-label="dismiss"]', '[aria-label="Dismiss"]',
+                        '[title="close"]', '[title="Close"]',
+                        'button svg', '.close-btn', '.close-button',
+                        '[data-dismiss]', '[data-close]',
+                    ];
+                    
+                    for (const sel of closeSelectors) {
+                        try {
+                            const closeBtn = container.querySelector(sel);
+                            if (closeBtn) {
+                                // Make sure it's the close button, not some other element
+                                const closeBtnEl = closeBtn.closest('button, a, [role="button"]') || closeBtn;
+                                closeBtnEl.click();
+                                dismissed.push('Clicked close button in ' + container.tagName);
+                                return true;
+                            }
+                        } catch(e) {}
+                    }
+                    
+                    return false;
+                }
+                
+                // ── PHASE 2: Find overlay containers ──
+                for (const selector of bannerSelectors) {
+                    try {
+                        const elements = document.querySelectorAll(selector);
+                        for (const el of elements) {
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            
+                            // Skip invisible elements
+                            if (style.display === 'none' || style.visibility === 'hidden') continue;
+                            if (rect.width === 0 || rect.height === 0) continue;
+                            
+                            // Check if this looks like an overlay (fixed/sticky position, or covers significant area)
+                            const isFixed = style.position === 'fixed' || style.position === 'sticky';
+                            const isAbsolute = style.position === 'absolute';
+                            const coversWidth = rect.width > window.innerWidth * 0.5;
+                            const hasHighZIndex = parseInt(style.zIndex) > 100;
+                            const isLikelyOverlay = isFixed || (isAbsolute && (coversWidth || hasHighZIndex));
+                            
+                            if (isLikelyOverlay || hasHighZIndex) {
+                                const clicked = tryClickDismissInContainer(el);
+                                if (!clicked) {
+                                    // Fallback: hide the overlay
+                                    el.style.display = 'none';
+                                    dismissed.push('Hidden overlay: ' + selector);
+                                }
+                            }
+                        }
+                    } catch(e) {}
+                }
+                
+                // ── PHASE 3: Handle full-screen backdrop overlays ──
+                try {
+                    const allElements = document.querySelectorAll('*');
+                    for (const el of allElements) {
+                        const style = window.getComputedStyle(el);
+                        if (style.position === 'fixed' && 
+                            parseInt(style.zIndex) > 999 &&
+                            el.getBoundingClientRect().width >= window.innerWidth * 0.8 &&
+                            el.getBoundingClientRect().height >= window.innerHeight * 0.8) {
+                            
+                            // This is likely a modal backdrop or full-screen overlay
+                            const clicked = tryClickDismissInContainer(el);
+                            if (!clicked) {
+                                el.style.display = 'none';
+                                dismissed.push('Hidden full-screen overlay');
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
+                // ── PHASE 4: Handle consent manager iframes ──
+                try {
+                    const iframes = document.querySelectorAll('iframe');
+                    for (const iframe of iframes) {
+                        const src = (iframe.getAttribute('src') || '').toLowerCase();
+                        const id = (iframe.getAttribute('id') || '').toLowerCase();
+                        const cls = (iframe.getAttribute('class') || '').toLowerCase();
+                        
+                        if (src.includes('consent') || src.includes('cookie') ||
+                            id.includes('consent') || id.includes('cookie') ||
+                            cls.includes('consent') || cls.includes('cookie') ||
+                            src.includes('onetrust') || src.includes('cookiebot') ||
+                            src.includes('trustarc') || src.includes('quantcast')) {
+                            
+                            try {
+                                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                                const buttons = iframeDoc.querySelectorAll('button, a, [role="button"]');
+                                for (const btn of buttons) {
+                                    const text = (btn.textContent || '').trim().toLowerCase();
+                                    for (const dismissText of dismissTexts) {
+                                        if (text.includes(dismissText)) {
+                                            btn.click();
+                                            dismissed.push('Clicked in iframe: "' + text.substring(0, 50) + '"');
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch(e) {
+                                // Cross-origin iframe — can't access, try hiding the parent
+                                const parent = iframe.closest('[class*="consent"], [class*="cookie"], [class*="modal"]');
+                                if (parent) {
+                                    parent.style.display = 'none';
+                                    dismissed.push('Hidden consent iframe container');
+                                }
+                            }
+                        }
+                    }
+                } catch(e) {}
+                
+                // ── PHASE 5: Remove scroll locks that overlays often add ──
+                try {
+                    document.body.style.overflow = '';
+                    document.body.style.position = '';
+                    document.documentElement.style.overflow = '';
+                    document.body.classList.remove('modal-open', 'no-scroll', 'overflow-hidden', 'noscroll');
+                } catch(e) {}
+                
+                return dismissed;
+            }""")
+
+            if dismissed:
+                for d in dismissed:
+                    logger.info(f"[BROWSER] 🧹 OVERLAY DISMISSED: {d}")
+            else:
+                logger.info("[BROWSER] No overlays detected to dismiss")
+            
+            # Small wait for any animations to complete
+            await self._page.wait_for_timeout(500)
+            return dismissed
+
+        except Exception as e:
+            logger.warning(f"[BROWSER] Overlay dismissal failed: {type(e).__name__}: {e}")
+            return []
+
+    async def discover_page_links(self, base_url: str) -> list[dict]:
+        """
+        Crawl internal navigation links from the current page's DOM.
+        Returns a list of {text, url, source} dicts for same-domain links.
+        
+        This gives the agent a PAGE MAP so it knows what pages exist
+        and can navigate to them directly instead of only scrolling.
+        """
+        try:
+            parsed_base = urlparse(base_url)
+            base_domain = parsed_base.netloc
+            
+            links = await self._page.evaluate("""(baseDomain) => {
+                const links = [];
+                const seen = new Set();
+                
+                function addLink(el, source) {
+                    const href = el.getAttribute('href');
+                    if (!href) return;
+                    
+                    // Skip non-navigation links
+                    if (href.startsWith('#') || href.startsWith('javascript:') || 
+                        href.startsWith('mailto:') || href.startsWith('tel:') ||
+                        href.startsWith('data:')) return;
+                    
+                    // Resolve relative URLs
+                    let fullUrl;
+                    try {
+                        fullUrl = new URL(href, window.location.href).href;
+                    } catch(e) { return; }
+                    
+                    // Filter to same domain only
+                    try {
+                        const urlObj = new URL(fullUrl);
+                        if (urlObj.hostname !== baseDomain && 
+                            !urlObj.hostname.endsWith('.' + baseDomain)) return;
+                        
+                        // Skip asset URLs
+                        const path = urlObj.pathname.toLowerCase();
+                        if (path.match(/\.(jpg|jpeg|png|gif|svg|ico|css|js|woff|woff2|ttf|eot|pdf|zip|mp4|webm|mp3)$/)) return;
+                        
+                        // Normalize URL (remove trailing slash, fragment)
+                        urlObj.hash = '';
+                        const normalized = urlObj.href.replace(/\/$/, '');
+                        
+                        if (seen.has(normalized)) return;
+                        seen.add(normalized);
+                        
+                        const text = (el.textContent || el.getAttribute('aria-label') || '').trim().substring(0, 100);
+                        if (!text) return;
+                        
+                        links.push({
+                            text: text,
+                            url: normalized,
+                            source: source,
+                        });
+                    } catch(e) {}
+                }
+                
+                // Scan nav elements (highest priority)
+                document.querySelectorAll('nav a, header a').forEach(a => addLink(a, 'nav'));
+                
+                // Scan footer
+                document.querySelectorAll('footer a').forEach(a => addLink(a, 'footer'));
+                
+                // Scan main content area
+                document.querySelectorAll('main a, article a, section a, [role="main"] a').forEach(a => addLink(a, 'content'));
+                
+                // Scan sidebar
+                document.querySelectorAll('aside a, [role="complementary"] a').forEach(a => addLink(a, 'sidebar'));
+                
+                // Catch-all for remaining body links
+                document.querySelectorAll('body a').forEach(a => addLink(a, 'body'));
+                
+                return links;
+            }""", base_domain)
+
+            logger.info(
+                f"[BROWSER] 🗺️ Discovered {len(links)} internal page links: "
+                f"nav={sum(1 for l in links if l['source'] == 'nav')}, "
+                f"footer={sum(1 for l in links if l['source'] == 'footer')}, "
+                f"content={sum(1 for l in links if l['source'] == 'content')}, "
+                f"other={sum(1 for l in links if l['source'] not in ('nav', 'footer', 'content'))}"
+            )
+            return links
+
+        except Exception as e:
+            logger.warning(f"[BROWSER] Page link discovery failed: {type(e).__name__}: {e}")
+            return []
+
+    async def detect_overlay(self) -> bool:
+        """
+        Quick check: is there currently an overlay blocking the page?
+        Returns True if an overlay is detected.
+        """
+        try:
+            return await self._page.evaluate("""() => {
+                // Check for fixed/sticky elements with high z-index covering significant area
+                const allElements = document.querySelectorAll('*');
+                for (const el of allElements) {
+                    const style = window.getComputedStyle(el);
+                    if ((style.position === 'fixed' || style.position === 'sticky') &&
+                        style.display !== 'none' && style.visibility !== 'hidden') {
+                        const rect = el.getBoundingClientRect();
+                        const zIndex = parseInt(style.zIndex) || 0;
+                        // Overlay if: high z-index + covers most of viewport
+                        if (zIndex > 100 && rect.width > window.innerWidth * 0.3 && rect.height > 50) {
+                            // But not navbars (typically at the very top, thin)
+                            if (rect.height > 100 || rect.top > 50) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                
+                // Check for body scroll lock (common overlay indicator)
+                const bodyStyle = window.getComputedStyle(document.body);
+                if (bodyStyle.overflow === 'hidden' && document.querySelector('[role="dialog"], [role="alertdialog"], [class*="modal"][class*="open"], [class*="modal"][class*="show"]')) {
+                    return true;
+                }
+                
+                return false;
+            }""")
+        except Exception:
             return False
 
     async def get_current_url(self) -> str:

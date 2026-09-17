@@ -425,7 +425,7 @@ async def call_llm_with_vision(
                 vision_messages = _build_vision_messages_openai_style(messages, image_base64)
                 response = await _call_openrouter(
                     messages=vision_messages,
-                    model="nvidia/nemotron-nano-12b-vl:free",
+                    model="openrouter/free",
                     temperature=temperature,
                     max_tokens=max_tokens,
                     response_format=response_format,

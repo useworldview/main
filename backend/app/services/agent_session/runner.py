@@ -36,14 +36,18 @@ async def run_agent_session(payload: dict) -> None:
     Main agent session runner.
     
     1. Launch browser, navigate to target URL
-    2. Loop (bounded by step budget AND wall-clock timeout):
-       - Perceive current state
-       - Decide next action
+    2. OVERLAY DISMISSAL PHASE — auto-dismiss cookie banners, popups, etc.
+    3. PAGE DISCOVERY PHASE — crawl internal links to build page map
+    4. Loop (bounded by step budget AND wall-clock timeout):
+       - Perceive current state (with overlay detection)
+       - Auto-dismiss overlays if detected mid-loop
+       - Decide next action (with page map + navigation nudging)
        - Guardrail check
        - Act
        - Log interaction_events row + upload screenshot
        - Update session memory
-    3. On completion: write terminal state, enqueue analyze_session
+       - Re-discover pages on navigation to new pages
+    5. On completion: write terminal state, enqueue analyze_session
     """
     session_id = payload["session_id"]
     study_id = payload["study_id"]
@@ -85,6 +89,7 @@ async def run_agent_session(payload: dict) -> None:
     driver = BrowserDriver()
     session_history: list[dict] = []
     pages_visited: set[str] = set()
+    discovered_pages: list[dict] = []  # Page map from DOM link crawling
     step_count = 0
     start_time = time.time()
     outcome = "error"
@@ -118,7 +123,50 @@ async def run_agent_session(payload: dict) -> None:
 
         pages_visited.add(target_url)
 
-        # Log initial navigation event
+        # ================================================================
+        # OVERLAY DISMISSAL PHASE — runs before main loop, no LLM needed
+        # ================================================================
+        logger.info(f"[SESSION:{sid}] 🧹 Phase 1: Auto-dismissing overlays...")
+        
+        # First pass — dismiss immediately visible overlays
+        dismissed_1 = await driver.dismiss_overlays()
+        
+        # Wait for delayed overlays (many appear after 1-2 seconds)
+        await driver._page.wait_for_timeout(1500)
+        
+        # Second pass — catch delayed popups
+        dismissed_2 = await driver.dismiss_overlays()
+        
+        all_dismissed = dismissed_1 + dismissed_2
+        if all_dismissed:
+            logger.info(f"[SESSION:{sid}] 🧹 Dismissed {len(all_dismissed)} overlay(s) before starting exploration")
+            # Log overlay dismissal as an interaction event
+            initial_screenshot = await driver.take_screenshot_bytes()
+            await _log_event(
+                sb=sb,
+                session_id=session_id,
+                sequence_no=0,
+                event_type="overlay_dismissed",
+                target_element=None,
+                page_url=target_url,
+                details={
+                    "type": "auto_overlay_dismissal",
+                    "dismissed": all_dismissed,
+                    "count": len(all_dismissed),
+                },
+                screenshot_bytes=initial_screenshot,
+                reasoning=f"Auto-dismissed {len(all_dismissed)} overlay(s): {', '.join(all_dismissed[:3])}",
+                study_id=study_id,
+            )
+
+        # ================================================================
+        # PAGE DISCOVERY PHASE — crawl internal links for page map
+        # ================================================================
+        logger.info(f"[SESSION:{sid}] 🗺️ Phase 2: Discovering page links...")
+        discovered_pages = await driver.discover_page_links(target_url)
+        logger.info(f"[SESSION:{sid}] 🗺️ Found {len(discovered_pages)} navigable pages")
+
+        # Log initial navigation event (after overlay dismissal)
         initial_perception = await perceive(driver)
         await _log_event(
             sb=sb,
@@ -127,7 +175,11 @@ async def run_agent_session(payload: dict) -> None:
             event_type="navigate",
             target_element=None,
             page_url=target_url,
-            details={"type": "initial_navigation"},
+            details={
+                "type": "initial_navigation",
+                "overlays_dismissed": len(all_dismissed),
+                "pages_discovered": len(discovered_pages),
+            },
             screenshot_bytes=initial_perception.screenshot_bytes,
             reasoning="Starting session — navigating to target URL",
             study_id=study_id,
@@ -155,6 +207,16 @@ async def run_agent_session(payload: dict) -> None:
             current_perception = await perceive(driver)
             current_url = current_perception.url
             pages_visited.add(current_url)
+
+            # ── Mid-loop overlay dismissal ──
+            if current_perception.has_overlay:
+                logger.info(f"[SESSION:{sid}] 🧹 Mid-loop overlay detected, auto-dismissing...")
+                mid_dismissed = await driver.dismiss_overlays()
+                if mid_dismissed:
+                    logger.info(f"[SESSION:{sid}] 🧹 Mid-loop dismissed {len(mid_dismissed)} overlay(s)")
+                    # Re-perceive after dismissal
+                    current_perception = await perceive(driver)
+                    current_url = current_perception.url
 
             # Check for bot detection
             try:
@@ -186,7 +248,7 @@ async def run_agent_session(payload: dict) -> None:
                     await driver.go_back()
                     continue
 
-            # DECIDE
+            # DECIDE (now with page map + navigation context)
             logger.info(f"[SESSION:{sid}] Step {step_count} → DECIDE")
             decision = await decide(
                 persona=persona,
@@ -196,6 +258,8 @@ async def run_agent_session(payload: dict) -> None:
                 screenshot_base64=current_perception.screenshot_base64,
                 study_id=study_id,
                 session_id=session_id,
+                discovered_pages=discovered_pages,
+                pages_visited=pages_visited,
             )
 
             # Map action to event type
@@ -305,6 +369,20 @@ async def run_agent_session(payload: dict) -> None:
                 "blocked": action_result.get("blocked", False),
             })
 
+            # ── Re-discover pages when navigating to new pages ──
+            new_url = await driver.get_current_url()
+            if new_url != current_url and new_url not in pages_visited:
+                logger.info(f"[SESSION:{sid}] 🗺️ Navigated to new page, re-discovering links...")
+                pages_visited.add(new_url)
+                new_links = await driver.discover_page_links(target_url)
+                # Merge new links with existing (deduplicate by URL)
+                existing_urls = {p['url'] for p in discovered_pages}
+                for link in new_links:
+                    if link['url'] not in existing_urls:
+                        discovered_pages.append(link)
+                        existing_urls.add(link['url'])
+                logger.info(f"[SESSION:{sid}] 🗺️ Page map now has {len(discovered_pages)} pages")
+
             # Update step count in DB periodically (every 5 steps)
             if step_count % 5 == 0:
                 sb.table("agent_sessions").update({
@@ -344,6 +422,7 @@ async def run_agent_session(payload: dict) -> None:
             "outcome": outcome,
             "step_count": step_count,
             "pages_visited": len(pages_visited),
+            "pages_discovered": len(discovered_pages),
             "duration_seconds": round(time.time() - start_time),
         })
 
@@ -366,7 +445,7 @@ async def run_agent_session(payload: dict) -> None:
         logger.info(
             f"[SESSION:{sid}] ═══ Session finished ═══\n"
             f"[SESSION:{sid}]   outcome={outcome}\n"
-            f"[SESSION:{sid}]   steps={step_count}, pages={len(pages_visited)}\n"
+            f"[SESSION:{sid}]   steps={step_count}, pages_visited={len(pages_visited)}, pages_discovered={len(discovered_pages)}\n"
             f"[SESSION:{sid}]   duration={time.time() - start_time:.1f}s\n"
             f"[SESSION:{sid}]   reason='{outcome_reason[:200]}'"
         )

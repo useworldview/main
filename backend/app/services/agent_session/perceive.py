@@ -20,16 +20,21 @@ class Perception:
         dom_snapshot: str,
         screenshot_base64: str,
         screenshot_bytes: bytes,
+        has_overlay: bool = False,
     ):
         self.url = url
         self.dom_snapshot = dom_snapshot
         self.screenshot_base64 = screenshot_base64
         self.screenshot_bytes = screenshot_bytes
+        self.has_overlay = has_overlay
 
     def to_prompt_text(self) -> str:
         """Convert perception to text for the LLM prompt."""
+        overlay_warning = ""
+        if self.has_overlay:
+            overlay_warning = "\n⚠️ WARNING: An overlay/popup/banner appears to be blocking the page content.\n"
         return f"""## Current Page State
-
+{overlay_warning}
 {self.dom_snapshot}
 """
 
@@ -42,6 +47,7 @@ async def perceive(driver: BrowserDriver) -> Perception:
     - Current URL
     - Simplified DOM/accessibility snapshot
     - Screenshot (for vision-capable models and storage)
+    - Whether an overlay is blocking the page
     """
     url = await driver.get_current_url()
     logger.info(f"[PERCEIVE] Capturing page state for {url}")
@@ -49,6 +55,7 @@ async def perceive(driver: BrowserDriver) -> Perception:
     dom_snapshot = await driver.get_dom_snapshot()
     screenshot_base64 = await driver.take_screenshot()
     screenshot_bytes = await driver.take_screenshot_bytes()
+    has_overlay = await driver.detect_overlay()
 
     # Count interactive elements for logging
     element_count = dom_snapshot.count("[") // 2  # rough estimate from snapshot format
@@ -58,7 +65,8 @@ async def perceive(driver: BrowserDriver) -> Perception:
         f"[PERCEIVE] Page captured: url={url}, "
         f"dom_length={len(dom_snapshot)} chars, "
         f"~{element_count} interactive elements, "
-        f"screenshot={screenshot_size // 1024}KB"
+        f"screenshot={screenshot_size // 1024}KB, "
+        f"has_overlay={has_overlay}"
     )
 
     return Perception(
@@ -66,4 +74,6 @@ async def perceive(driver: BrowserDriver) -> Perception:
         dom_snapshot=dom_snapshot,
         screenshot_base64=screenshot_base64,
         screenshot_bytes=screenshot_bytes,
+        has_overlay=has_overlay,
     )
+

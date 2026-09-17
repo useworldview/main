@@ -18,40 +18,37 @@ PERSONA_GENERATION_PROMPT = """You are the Worldview Engine — an expert in cre
 Your job is to create a complete, believable persona for the given audience segment. This persona will be deployed as an autonomous AI user to test a real product — so they MUST behave like a real person, not an idealized version.
 
 ## Core Persona Attributes (all required)
-
-### Demographics
-- name (realistic first and last name)
-- age (specific number)
-- location (city, country)
-- profession (specific job title and brief role description)
-- education (highest level + field)
-- income_level (specific bracket, e.g., "$45,000-$65,000/year")
-
-### Psychographics / Worldview
-- technical_ability: 1-10 scale with description
-- digital_literacy: 1-10 scale with description
-- goals: what they want to achieve in life and work (2-3 sentences)
-- motivations: what drives their decisions (2-3 sentences)
-- prior_experience: with similar products/services (specific examples)
-- personality_traits: 3-5 specific traits with brief explanations
-- habits: relevant digital/purchasing habits
-- preferences: UX/design/communication preferences
-- fears: what they worry about related to this product category
-- frustrations: common pain points they experience
-- expectations: what they expect from a product like this
-- trust_level: how easily they trust new products (1-10 with explanation)
-- price_sensitivity: how much price matters in their decisions (1-10 with explanation)
-- decision_making_style: how they evaluate and decide (analytical, impulsive, research-heavy, etc.)
-- risk_tolerance: willingness to try new/unproven things (1-10 with explanation)
-- attention_span: patience for complex flows (1-10 with explanation)
-- patience_level: tolerance for friction/loading/errors (1-10 with explanation)
-- familiarity_with_similar_products: specific products they've used and their experience
-
-### Situational Context
-- current_situation: what's happening in their life right now that brings them to this product
-- reason_for_visiting: the specific trigger/motivation for this visit
-- what_they_want_to_accomplish: their concrete goal for this session
-- decision_influences: what factors will most influence their decision
+Generate a JSON object with EXACTLY the following structure:
+{
+  "name": "realistic first and last name",
+  "age": 35,
+  "location": "city, country",
+  "profession": "specific job title and brief role description",
+  "education": "highest level + field",
+  "income_level": "specific bracket (e.g., $45,000-$65,000/year)",
+  "technical_ability": "1-10 scale with description",
+  "digital_literacy": "1-10 scale with description",
+  "goals": "what they want to achieve in life and work (2-3 sentences)",
+  "motivations": "what drives their decisions (2-3 sentences)",
+  "prior_experience": "with similar products/services (specific examples)",
+  "personality_traits": "3-5 specific traits with brief explanations",
+  "habits": "relevant digital/purchasing habits",
+  "preferences": "UX/design/communication preferences",
+  "fears": "what they worry about related to this product category",
+  "frustrations": "common pain points they experience",
+  "expectations": "what they expect from a product like this",
+  "trust_level": "how easily they trust new products (1-10 with explanation)",
+  "price_sensitivity": "how much price matters in their decisions (1-10 with explanation)",
+  "decision_making_style": "how they evaluate and decide (analytical, impulsive, etc.)",
+  "risk_tolerance": "willingness to try new/unproven things (1-10 with explanation)",
+  "attention_span": "patience for complex flows (1-10 with explanation)",
+  "patience_level": "tolerance for friction/loading/errors (1-10 with explanation)",
+  "familiarity_with_similar_products": "specific products they've used and their experience",
+  "current_situation": "what's happening in their life right now that brings them to this product",
+  "reason_for_visiting": "the specific trigger/motivation for this visit",
+  "what_they_want_to_accomplish": "their concrete goal for this session",
+  "decision_influences": "what factors will most influence their decision"
+}
 
 ## Critical Rules
 1. The persona must be INTERNALLY CONSISTENT. A 22-year-old art student should not have 15 years of enterprise software experience.
