@@ -35,7 +35,11 @@ class Settings(BaseSettings):
 
     # Worker config
     worker_poll_interval_seconds: int = 2
-    worker_concurrency: int = 4
+    worker_concurrency: int = 2
+    worker_idle_shutdown_seconds: int = 30  # Cloud Run: exit after N seconds with no jobs
+
+    # Run mode: "unified" (API + worker in one process), "api_only", "worker_only"
+    run_mode: str = "unified"
 
     # Persona limits
     max_personas_per_study: int = 10

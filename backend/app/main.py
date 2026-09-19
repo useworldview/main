@@ -1,8 +1,11 @@
 """
 UseWorldview Backend — FastAPI Application
+
+Supports unified mode (API + worker in one process) for Cloud Run deployment.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -24,7 +27,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     settings = get_settings()
-    logger.info(f"UseWorldview Backend starting (env={settings.env})")
+    logger.info(f"UseWorldview Backend starting (env={settings.env}, mode={settings.run_mode})")
     logger.info(f"LLM fallback order: {settings.llm_providers}")
 
     # Install Playwright browsers on first run (dev only)
@@ -53,6 +56,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Storage bucket check: {e}")
 
+    # In unified mode, check for any orphaned pending jobs on startup
+    if settings.run_mode == "unified":
+        try:
+            from app.jobs.queue import has_pending_or_running_jobs
+            if has_pending_or_running_jobs():
+                logger.info("[UNIFIED] Found pending jobs on startup, waking worker...")
+                from app.jobs.worker import wake_worker
+                wake_worker()
+        except Exception as e:
+            logger.warning(f"[UNIFIED] Startup job check failed: {e}")
+
     yield
     logger.info("UseWorldview Backend shutting down")
 
@@ -66,13 +80,21 @@ app = FastAPI(
 )
 
 # CORS — allow the frontend to call us
+# Build allowed origins from environment or use defaults
+frontend_url = os.environ.get("FRONTEND_URL", "")
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
+# Add Vercel pattern
+if frontend_url:
+    allowed_origins.append(frontend_url)
+# Allow any *.vercel.app subdomain
+allowed_origins.append("https://*.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "https://*.vercel.app",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,3 +102,43 @@ app.add_middleware(
 
 # Register routes
 app.include_router(studies_router)
+
+
+# ============================================================================
+# Internal endpoints (not for external clients)
+# ============================================================================
+
+@app.post("/internal/wake-worker")
+async def internal_wake_worker():
+    """
+    Wake the background worker to process pending jobs.
+    This is called automatically by enqueue_job() in unified mode,
+    but can also be called manually to force a wake-up.
+    """
+    settings = get_settings()
+    if settings.run_mode != "unified":
+        return {"status": "skipped", "reason": "not in unified mode"}
+
+    from app.jobs.worker import wake_worker, is_worker_running
+    wake_worker()
+    return {
+        "status": "ok",
+        "worker_running": is_worker_running(),
+    }
+
+
+@app.get("/internal/worker-status")
+async def internal_worker_status():
+    """Check the background worker status."""
+    settings = get_settings()
+    if settings.run_mode != "unified":
+        return {"status": "not_applicable", "run_mode": settings.run_mode}
+
+    from app.jobs.worker import is_worker_running
+    from app.jobs.queue import has_pending_or_running_jobs
+
+    return {
+        "worker_running": is_worker_running(),
+        "has_pending_jobs": has_pending_or_running_jobs(),
+        "run_mode": settings.run_mode,
+    }

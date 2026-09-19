@@ -1,0 +1,49 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots (runtime data)
+screenshots/
+
+# Documentation (not needed in container)
+walkthrough.md
+AGENTS.md
+CLAUDE.md

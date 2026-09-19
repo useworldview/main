@@ -1,6 +1,11 @@
 """
 Worker poll loop — the async job processor.
 Polls agent_jobs, dispatches to the right handler, handles success/failure/retry.
+
+Supports two modes:
+- "unified" (Cloud Run): worker runs as a background asyncio task inside the API process.
+  Starts on demand via wake_worker(), drains all jobs, then auto-exits after idle timeout.
+- "standalone" (local dev): traditional infinite poll loop via run_worker().
 """
 
 import asyncio
@@ -12,13 +17,17 @@ import traceback
 from typing import Optional
 
 from app.core.config import get_settings
-from app.jobs.queue import claim_jobs, mark_running, complete_job, fail_job
+from app.jobs.queue import claim_jobs, mark_running, complete_job, fail_job, has_pending_or_running_jobs
 from app.jobs.job_types import JobType
 
 logger = logging.getLogger(__name__)
 
-# Graceful shutdown flag
+# Graceful shutdown flag (used in standalone mode)
 _shutdown = False
+
+# Background worker task reference (used in unified mode)
+_worker_task: Optional[asyncio.Task] = None
+_worker_lock = asyncio.Lock() if hasattr(asyncio, 'Lock') else None
 
 
 def _handle_signal(signum, frame):
@@ -183,9 +192,125 @@ def _check_study_completion(study_id: Optional[str]) -> None:
         logger.error(f"[WORKER] Failed to check study completion for {study_id}: {e}", exc_info=True)
 
 
+# ============================================================================
+# Unified Mode (Cloud Run) — drain-and-exit worker
+# ============================================================================
+
+async def _run_worker_drain_mode():
+    """
+    Worker loop for Cloud Run unified mode.
+    Processes all pending jobs, then waits idle_timeout seconds.
+    If no new jobs arrive, exits cleanly so Cloud Run can scale to zero.
+    """
+    settings = get_settings()
+    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+    poll_interval = settings.worker_poll_interval_seconds
+    concurrency = settings.worker_concurrency
+    idle_timeout = settings.worker_idle_shutdown_seconds
+
+    logger.info(
+        f"[WORKER] Worker {worker_id} started (drain mode): "
+        f"poll_interval={poll_interval}s, concurrency={concurrency}, "
+        f"idle_timeout={idle_timeout}s"
+    )
+
+    running_tasks: set[asyncio.Task] = set()
+    idle_since: Optional[float] = None
+    poll_count = 0
+
+    while True:
+        try:
+            # Clean up finished tasks
+            done = {t for t in running_tasks if t.done()}
+            for t in done:
+                if t.exception():
+                    logger.error(f"[WORKER] Background task exception: {t.exception()}")
+            running_tasks -= done
+
+            # Calculate how many jobs we can take
+            available_slots = concurrency - len(running_tasks)
+
+            if available_slots > 0:
+                jobs = claim_jobs(worker_id, limit=available_slots)
+
+                if jobs:
+                    logger.info(f"[WORKER] Claimed {len(jobs)} jobs (slots={available_slots})")
+                    idle_since = None  # Reset idle timer — we have work
+
+                for job in jobs:
+                    task = asyncio.create_task(dispatch_job(job))
+                    running_tasks.add(task)
+
+            # Check if we should idle-exit
+            if not running_tasks and not has_pending_or_running_jobs():
+                if idle_since is None:
+                    idle_since = time.time()
+                    logger.info(f"[WORKER] No jobs remaining. Starting {idle_timeout}s idle countdown...")
+                elif time.time() - idle_since >= idle_timeout:
+                    logger.info(f"[WORKER] Idle timeout reached ({idle_timeout}s). Worker shutting down.")
+                    break
+            else:
+                idle_since = None  # Reset if there are running tasks or pending jobs
+
+            # Periodic status log every 30 polls
+            poll_count += 1
+            if poll_count % 30 == 0 and running_tasks:
+                logger.info(f"[WORKER] Heartbeat: {len(running_tasks)} tasks running")
+
+            await asyncio.sleep(poll_interval)
+
+        except Exception as e:
+            logger.error(f"[WORKER] Poll loop error: {e}", exc_info=True)
+            await asyncio.sleep(poll_interval * 2)
+
+    # Wait for any remaining tasks
+    if running_tasks:
+        logger.info(f"[WORKER] Waiting for {len(running_tasks)} running tasks to complete...")
+        await asyncio.gather(*running_tasks, return_exceptions=True)
+
+    logger.info(f"[WORKER] Worker {worker_id} shut down cleanly (drain mode)")
+
+
+def wake_worker():
+    """
+    Start the background worker if it's not already running.
+    Called by enqueue_job() in unified mode.
+    Safe to call multiple times — only one worker runs at a time.
+    """
+    global _worker_task
+
+    settings = get_settings()
+    if settings.run_mode != "unified":
+        return  # In standalone mode, worker runs separately
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        logger.debug("[WORKER] No event loop available, skipping wake_worker")
+        return
+
+    # Check if a worker task is already running
+    if _worker_task is not None and not _worker_task.done():
+        logger.debug("[WORKER] Worker already running, wake_worker is a no-op")
+        return
+
+    logger.info("[WORKER] Waking background worker...")
+    _worker_task = loop.create_task(_run_worker_drain_mode())
+
+
+def is_worker_running() -> bool:
+    """Check if the background worker task is currently running."""
+    return _worker_task is not None and not _worker_task.done()
+
+
+# ============================================================================
+# Standalone Mode (local dev) — infinite poll loop
+# ============================================================================
+
 async def run_worker():
     """
-    Main worker loop. Polls for jobs and dispatches them.
+    Main worker loop for standalone mode. Polls for jobs and dispatches them.
+    Runs forever until SIGTERM/SIGINT.
     Supports graceful shutdown via SIGTERM/SIGINT.
     """
     # Register signal handlers
@@ -198,7 +323,7 @@ async def run_worker():
     concurrency = settings.worker_concurrency
 
     logger.info(
-        f"[WORKER] Worker {worker_id} started: "
+        f"[WORKER] Worker {worker_id} started (standalone mode): "
         f"poll_interval={poll_interval}s, concurrency={concurrency}"
     )
 

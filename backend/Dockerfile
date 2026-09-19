@@ -17,8 +17,12 @@ RUN python -m playwright install --with-deps chromium
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8000
+# Cloud Run sets PORT env var (default 8080)
+ENV PORT=8080
 
-# Run API server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Expose port
+EXPOSE ${PORT}
+
+# Run API server — Cloud Run requires listening on $PORT
+# In unified mode (default), the worker runs as a background task inside this process
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}

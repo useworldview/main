@@ -22,6 +22,7 @@ def enqueue_job(
     """
     Enqueue a new job for the worker to pick up.
     Returns the job ID.
+    Also wakes the background worker if running in unified mode.
     """
     sb = get_supabase_client()
     job_id = str(uuid.uuid4())
@@ -36,6 +37,14 @@ def enqueue_job(
     }).execute()
 
     logger.info(f"Enqueued job {job_id} type={job_type}")
+
+    # Wake the background worker (no-op if not in unified mode or already running)
+    try:
+        from app.jobs.worker import wake_worker
+        wake_worker()
+    except Exception as e:
+        logger.debug(f"Could not wake worker (may be running standalone): {e}")
+
     return job_id
 
 
@@ -136,3 +145,20 @@ def fail_job(job_id: str, error_message: str) -> None:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", job_id).execute()
         logger.error(f"Job {job_id} permanently failed: {error_message}")
+
+
+def has_pending_or_running_jobs() -> bool:
+    """
+    Check if there are any jobs that are pending, claimed, or running.
+    Used by the worker drain-and-exit logic to decide when to shut down.
+    """
+    sb = get_supabase_client()
+    result = (
+        sb.table("agent_jobs")
+        .select("id", count="exact")
+        .in_("status", ["pending", "claimed", "running"])
+        .limit(1)
+        .execute()
+    )
+    return (result.count or 0) > 0
+
