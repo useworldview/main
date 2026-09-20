@@ -431,14 +431,14 @@ function StudyWizardInner() {
                   }}
                   className={`text-left p-4 rounded-xl border-2 transition-all ${
                     isSelected
-                      ? 'border-brand-500 bg-brand-50 shadow-sm'
-                      : 'border-surface-200 hover:border-brand-200 hover:bg-surface-50'
+                      ? 'border-brand-500 bg-brand-50/80 dark:bg-brand-950/50 dark:border-brand-500 shadow-sm ring-1 ring-brand-400/40'
+                      : 'border-surface-200 dark:border-surface-200 hover:border-brand-300 dark:hover:border-brand-800 hover:bg-surface-50 dark:hover:bg-surface-100'
                   }`}
                 >
                   <div className="flex items-start gap-3">
                     <span className="text-xl">{goal.icon}</span>
                     <div>
-                      <p className={`font-semibold text-sm ${isSelected ? 'text-brand-700' : 'text-surface-800'}`}>
+                      <p className={`font-semibold text-sm ${isSelected ? 'text-brand-700 dark:text-brand-300' : 'text-surface-800 dark:text-surface-200'}`}>
                         {goal.label}
                       </p>
                       <p className="text-xs text-surface-500 mt-0.5">{goal.description}</p>

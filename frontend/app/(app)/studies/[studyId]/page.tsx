@@ -416,8 +416,13 @@ export default function StudyResultsPage() {
                           </div>
                         )}
 
-                        <div className="flex items-center gap-1 text-xs text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                          View detail <ChevronRight className="w-3 h-3" />
+                        <div className="flex items-center justify-between pt-2 border-t border-surface-200 dark:border-surface-200 mt-2">
+                          <span className="flex items-center gap-1 text-xs text-brand-600 dark:text-brand-400 font-semibold group-hover:translate-x-0.5 transition-transform">
+                            Persona detail <ChevronRight className="w-3 h-3" />
+                          </span>
+                          <span className="text-[11px] font-mono text-surface-400">
+                            Replay ready
+                          </span>
                         </div>
                       </Link>
                     );
