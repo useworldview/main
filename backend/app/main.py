@@ -4,12 +4,19 @@ UseWorldview Backend — FastAPI Application
 Supports unified mode (API + worker in one process) for Cloud Run deployment.
 """
 
+import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Fix for Windows: Playwright needs ProactorEventLoop for subprocess support.
+# Uvicorn defaults to SelectorEventLoop on Windows, which causes NotImplementedError.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from app.core.config import get_settings
 from app.api.routes.studies import router as studies_router
@@ -80,15 +87,13 @@ app = FastAPI(
 )
 
 # CORS — allow the frontend to call us
-# Build allowed origins from environment or use defaults
-frontend_url = os.environ.get("FRONTEND_URL", "")
+_settings_for_cors = get_settings()
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:3001",
 ]
-# Add Vercel pattern
-if frontend_url:
-    allowed_origins.append(frontend_url)
+if _settings_for_cors.frontend_url:
+    allowed_origins.append(_settings_for_cors.frontend_url)
 # Allow any *.vercel.app subdomain
 allowed_origins.append("https://*.vercel.app")
 

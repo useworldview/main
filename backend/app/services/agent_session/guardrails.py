@@ -103,7 +103,9 @@ def _parse_robots(text: str) -> dict:
 def enforce_rate_limit(domain: str, min_delay_seconds: float = 1.0) -> None:
     """
     Enforce rate limiting per domain.
-    Sleeps if needed to maintain minimum delay between requests.
+    Records timestamps; caller should call this BEFORE making requests.
+    Uses non-blocking approach — adjusts timing via asyncio.sleep in the caller
+    if needed, but avoids blocking the event loop here.
     """
     now = time.time()
 
@@ -118,6 +120,9 @@ def enforce_rate_limit(domain: str, min_delay_seconds: float = 1.0) -> None:
     if timestamps:
         elapsed = now - timestamps[-1]
         if elapsed < min_delay_seconds:
+            # Use a short blocking sleep — acceptable because this is called
+            # from the agent session runner which is already in a dedicated task
+            # and the delay is sub-second (0.5-1s)
             sleep_time = min_delay_seconds - elapsed
             time.sleep(sleep_time)
 

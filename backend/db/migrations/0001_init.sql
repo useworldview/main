@@ -109,7 +109,7 @@ create table public.interaction_events (
   session_id uuid not null references public.agent_sessions(id) on delete cascade,
   sequence_no int not null,
   event_type text not null check (event_type in
-    ('click','scroll','type','navigate','search','back','forward','wait','screenshot','form_submit','page_error','dead_end')),
+    ('click','scroll','type','navigate','search','back','forward','wait','screenshot','form_submit','page_error','dead_end','overlay_dismissed')),
   target_element text,
   page_url text,
   details jsonb not null default '{}',

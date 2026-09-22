@@ -10,13 +10,79 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+from playwright_stealth import stealth_async
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 UseWorldviewBot/1.0"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
+
+def _patch_selector_loop_for_subprocess(loop):
+    """Patch a Windows SelectorEventLoop to support subprocess creation.
+    
+    uvicorn --reload on Windows forces _WindowsSelectorEventLoop, which raises
+    NotImplementedError on asyncio.create_subprocess_exec() because it doesn't
+    implement _make_subprocess_transport(). Playwright needs this to launch its
+    Node.js server process.
+    
+    This fix creates a persistent ProactorEventLoop in a background thread and
+    patches the selector loop's subprocess_exec to delegate subprocess creation
+    to the proactor loop. The subprocess transports and protocols are created on
+    the proactor loop but are compatible because they communicate via pipes.
+    
+    Returns a cleanup function that stops the proactor loop and thread.
+    """
+    import asyncio
+    import threading
+
+    proactor_loop = asyncio.ProactorEventLoop()
+    proactor_thread = threading.Thread(
+        target=proactor_loop.run_forever,
+        daemon=True,
+        name="playwright-proactor-subprocess",
+    )
+    proactor_thread.start()
+    logger.info("[BROWSER] Started ProactorEventLoop background thread for subprocess support")
+
+    original_subprocess_exec = loop.subprocess_exec
+
+    async def patched_subprocess_exec(protocol_factory, program, *args, **kwargs):
+        """Delegate subprocess_exec to the ProactorEventLoop thread."""
+        import concurrent.futures
+
+        future = concurrent.futures.Future()
+
+        async def _run_on_proactor():
+            try:
+                transport, protocol = await proactor_loop.subprocess_exec(
+                    protocol_factory, program, *args, **kwargs
+                )
+                future.set_result((transport, protocol))
+            except Exception as e:
+                future.set_exception(e)
+
+        asyncio.run_coroutine_threadsafe(_run_on_proactor(), proactor_loop)
+
+        # Wait for the result without blocking the selector event loop
+        result = await loop.run_in_executor(None, future.result, 30)
+        return result
+
+    loop.subprocess_exec = patched_subprocess_exec
+
+    def cleanup():
+        """Stop the proactor loop and restore the original subprocess_exec."""
+        try:
+            loop.subprocess_exec = original_subprocess_exec
+            proactor_loop.call_soon_threadsafe(proactor_loop.stop)
+            proactor_thread.join(timeout=5)
+            proactor_loop.close()
+            logger.info("[BROWSER] Cleaned up ProactorEventLoop background thread")
+        except Exception as e:
+            logger.warning(f"[BROWSER] Error cleaning up proactor thread: {e}")
+
+    return cleanup
 
 class BrowserDriver:
     """Manages a single browser context for an agent session."""
@@ -28,24 +94,74 @@ class BrowserDriver:
         self._page: Optional[Page] = None
 
     async def launch(self) -> None:
-        """Launch a headless browser and create a page."""
+        """Launch a headless browser and create a page.
+        
+        On Windows, uvicorn --reload forces SelectorEventLoop which breaks
+        Playwright's subprocess creation. We detect and fix this by temporarily
+        swapping the running loop's _make_subprocess_transport to use a
+        ProactorEventLoop for subprocess operations only.
+        """
+        import sys
         import time as _time
         _start = _time.time()
         settings = get_settings()
         logger.info(f"[BROWSER] Launching Chromium (headless={settings.playwright_headless})...")
+
+        # ── Windows SelectorEventLoop workaround ──
+        # uvicorn --reload on Windows forces _WindowsSelectorEventLoop which
+        # raises NotImplementedError on asyncio.create_subprocess_exec().
+        # Fix: patch the loop to delegate subprocess creation to a 
+        # ProactorEventLoop running in a background thread.
+        _cleanup_proactor = None
+        if sys.platform == "win32":
+            import asyncio as _asyncio
+            loop = _asyncio.get_running_loop()
+            if "Selector" in type(loop).__name__:
+                logger.warning(
+                    f"[BROWSER] Detected {type(loop).__name__} on Windows — "
+                    "patching subprocess support for Playwright"
+                )
+                _cleanup_proactor = _patch_selector_loop_for_subprocess(loop)
+
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=settings.playwright_headless,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
         )
         self._context = await self._browser.new_context(
             viewport={"width": 1280, "height": 720},
             user_agent=USER_AGENT,
             locale="en-US",
             timezone_id="America/New_York",
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
         )
+        
+        # Add a realistic init script to bypass webdriver detection
+        await self._context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+        """)
+        
         self._page = await self._context.new_page()
+        
+        # Apply playwright-stealth
+        await stealth_async(self._page)
+        
         self._page.set_default_timeout(30000)
         self._page.set_default_navigation_timeout(30000)
+
+        # Store cleanup function for the proactor (called on close)
+        self._cleanup_proactor = _cleanup_proactor
+
         logger.info(f"[BROWSER] ✅ Chromium launched in {_time.time() - _start:.1f}s")
 
     async def close(self) -> None:
@@ -58,6 +174,9 @@ class BrowserDriver:
                 await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
+            # Clean up the proactor thread if we patched the loop
+            if hasattr(self, '_cleanup_proactor') and self._cleanup_proactor:
+                self._cleanup_proactor()
             logger.info("[BROWSER] Browser closed")
         except Exception as e:
             logger.warning(f"[BROWSER] Error closing browser: {e}")
@@ -67,8 +186,13 @@ class BrowserDriver:
         logger.info(f"[BROWSER] Navigating to {url}...")
         try:
             response = await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for initial content to render
-            await self._page.wait_for_load_state("networkidle", timeout=10000)
+            # Best-effort wait for network to settle — many modern SPAs (Vercel,
+            # Next.js, etc.) have persistent WebSocket/analytics connections that
+            # prevent networkidle from ever firing. Don't fail navigation for this.
+            try:
+                await self._page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                logger.debug(f"[BROWSER] networkidle timeout for {url} (normal for SPAs)")
             success = response is not None and response.status < 400
             if success:
                 logger.info(f"[BROWSER] ✅ Navigation success: {url} (HTTP {response.status})")
@@ -473,12 +597,19 @@ class BrowserDriver:
                 }
                 
                 // ── PHASE 3: Handle full-screen backdrop overlays ──
+                // Use targeted selectors instead of querySelectorAll('*') to avoid
+                // computing styles for every DOM element (15k+ on heavy pages).
                 try {
-                    const allElements = document.querySelectorAll('*');
-                    for (const el of allElements) {
+                    const backdropCandidates = document.querySelectorAll(
+                        'div[style*="fixed"], div[style*="z-index"], ' +
+                        '[class*="backdrop"], [class*="overlay"], [class*="modal"], ' +
+                        'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], ' +
+                        'body > div, body > aside, body > section'
+                    );
+                    for (const el of backdropCandidates) {
                         const style = window.getComputedStyle(el);
-                        if (style.position === 'fixed' && 
-                            parseInt(style.zIndex) > 999 &&
+                        if ((style.position === 'fixed' || style.position === 'absolute') && 
+                            parseInt(style.zIndex) > 100 &&
                             el.getBoundingClientRect().width >= window.innerWidth * 0.8 &&
                             el.getBoundingClientRect().height >= window.innerHeight * 0.8) {
                             

@@ -23,6 +23,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+tests/
 
 # Git
 .git/
@@ -43,7 +44,15 @@ Thumbs.db
 # Screenshots (runtime data)
 screenshots/
 
+# Docker (don't copy compose into container)
+docker-compose.yml
+docker-compose*.yml
+Dockerfile
+Dockerfile.*
+
 # Documentation (not needed in container)
+README.md
 walkthrough.md
 AGENTS.md
 CLAUDE.md
+DESIGN.md

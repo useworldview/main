@@ -38,27 +38,23 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python -m playwright install chromium
 
 # Copy and fill in your env vars
 cp .env.example .env
 ```
+*(Note: Playwright browser installation is handled automatically on startup in development).*
 
 ### 3. Database Setup
 Run the SQL in `db/migrations/0001_init.sql` against your Supabase project's SQL editor.
 
-Also create a Storage bucket named `screenshots` (not public).
+*(Note: The public `screenshots` storage bucket will be created automatically on startup).*
 
 ### 4. Run
 
-**API server:**
+The backend runs in **unified mode** by default, meaning the API and the worker run in the same process for local development.
+
 ```bash
 uvicorn app.main:app --reload --port 8000
-```
-
-**Worker process** (separate terminal):
-```bash
-python worker_entrypoint.py
 ```
 
 ### 5. Test

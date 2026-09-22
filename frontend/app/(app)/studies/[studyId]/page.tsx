@@ -193,7 +193,11 @@ export default function StudyResultsPage() {
             {sessions.map((session) => {
               const persona = personas.find(p => p.id === session.persona_id);
               return (
-                <div key={session.id} className="p-4 rounded-xl bg-surface-50 border border-surface-100">
+                <Link 
+                  key={session.id} 
+                  href={`/studies/${studyId}/personas/${session.persona_id}`}
+                  className="p-4 rounded-xl bg-surface-50 border border-surface-100 hover:border-brand-300 hover:bg-surface-100 transition-all cursor-pointer block"
+                >
                   <div className="flex items-center gap-2.5 mb-2">
                     <div className="w-8 h-8 rounded-full gradient-bg flex items-center justify-center text-white text-xs font-bold">
                       {persona?.name.split(' ').map(n => n[0]).join('').slice(0, 2) || '??'}
@@ -232,75 +236,89 @@ export default function StudyResultsPage() {
                       />
                     </div>
                   )}
-                </div>
+                </Link>
               );
             })}
           </div>
         </div>
       )}
 
-      {/* Completed State: Metrics + Results */}
-      {study.status === 'completed' && study.summary_metrics && (
+      {/* Completed or Failed State: Metrics + Results */}
+      {(study.status === 'completed' || study.status === 'failed') && (
         <>
           {/* Metric Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-            {study.summary_metrics.trust_score && (
-              <div className="metric-card">
-                <div className="flex items-center gap-2 mb-3">
-                  <Shield className="w-5 h-5 text-brand-500" />
-                  <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Trust Score</span>
+          {study.summary_metrics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              {study.summary_metrics.trust_score && (
+                <div className="metric-card">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Shield className="w-5 h-5 text-brand-500" />
+                    <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Trust Score</span>
+                  </div>
+                  <p className="text-3xl font-bold text-surface-900">
+                    {percentDisplay(study.summary_metrics.trust_score.value)}
+                  </p>
+                  <p className="text-xs text-surface-400 mt-1">
+                    {(study.summary_metrics.trust_score as any).numerator != null
+                      ? `${(study.summary_metrics.trust_score as any).numerator}/${(study.summary_metrics.trust_score as any).denominator} positive signals`
+                      : (study.summary_metrics.trust_score as any).trust_count != null
+                        ? `${(study.summary_metrics.trust_score as any).trust_count} trust / ${(study.summary_metrics.trust_score as any).distrust_count} distrust`
+                        : 'Trust evaluation'}
+                  </p>
                 </div>
-                <p className="text-3xl font-bold text-surface-900">
-                  {percentDisplay(study.summary_metrics.trust_score.value)}
-                </p>
-                <p className="text-xs text-surface-400 mt-1">
-                  {study.summary_metrics.trust_score.trust_count} trust / {study.summary_metrics.trust_score.distrust_count} distrust signals
-                </p>
-              </div>
-            )}
-            {study.summary_metrics.task_completion_rate && (
-              <div className="metric-card">
-                <div className="flex items-center gap-2 mb-3">
-                  <CheckCircle className="w-5 h-5 text-success" />
-                  <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Completion</span>
+              )}
+              {study.summary_metrics.task_completion_rate && (
+                <div className="metric-card">
+                  <div className="flex items-center gap-2 mb-3">
+                    <CheckCircle className="w-5 h-5 text-success" />
+                    <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Completion</span>
+                  </div>
+                  <p className="text-3xl font-bold text-surface-900">
+                    {percentDisplay(study.summary_metrics.task_completion_rate.value)}
+                  </p>
+                  <p className="text-xs text-surface-400 mt-1">
+                    {(study.summary_metrics.task_completion_rate as any).numerator != null
+                      ? `${(study.summary_metrics.task_completion_rate as any).numerator}/${(study.summary_metrics.task_completion_rate as any).denominator} personas completed`
+                      : (study.summary_metrics.task_completion_rate as any).completed != null
+                        ? `${(study.summary_metrics.task_completion_rate as any).completed} / ${(study.summary_metrics.task_completion_rate as any).total} personas`
+                        : 'Task completion'}
+                  </p>
                 </div>
-                <p className="text-3xl font-bold text-surface-900">
-                  {percentDisplay(study.summary_metrics.task_completion_rate.value)}
-                </p>
-                <p className="text-xs text-surface-400 mt-1">
-                  {study.summary_metrics.task_completion_rate.completed} / {study.summary_metrics.task_completion_rate.total} personas completed
-                </p>
-              </div>
-            )}
-            {study.summary_metrics.usability_score && (
-              <div className="metric-card">
-                <div className="flex items-center gap-2 mb-3">
-                  <TrendingUp className="w-5 h-5 text-info" />
-                  <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Usability</span>
+              )}
+              {study.summary_metrics.usability_score && (
+                <div className="metric-card">
+                  <div className="flex items-center gap-2 mb-3">
+                    <TrendingUp className="w-5 h-5 text-info" />
+                    <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Usability</span>
+                  </div>
+                  <p className="text-3xl font-bold text-surface-900">
+                    {percentDisplay(study.summary_metrics.usability_score.value)}
+                  </p>
+                  <p className="text-xs text-surface-400 mt-1">
+                    {(study.summary_metrics.usability_score as any).numerator != null
+                      ? `${(study.summary_metrics.usability_score as any).numerator}/${(study.summary_metrics.usability_score as any).denominator} positive signals`
+                      : (study.summary_metrics.usability_score as any).positive_count != null
+                        ? `${(study.summary_metrics.usability_score as any).positive_count} positive / ${(study.summary_metrics.usability_score as any).negative_count} negative`
+                        : 'Usability evaluation'}
+                  </p>
                 </div>
-                <p className="text-3xl font-bold text-surface-900">
-                  {percentDisplay(study.summary_metrics.usability_score.value)}
-                </p>
-                <p className="text-xs text-surface-400 mt-1">
-                  {study.summary_metrics.usability_score.positive_count} positive / {study.summary_metrics.usability_score.negative_count} negative
-                </p>
-              </div>
-            )}
-            {study.summary_metrics.value_prop_clarity && (
-              <div className="metric-card">
-                <div className="flex items-center gap-2 mb-3">
-                  <Lightbulb className="w-5 h-5 text-warning" />
-                  <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Value Clarity</span>
+              )}
+              {study.summary_metrics.value_prop_clarity && (
+                <div className="metric-card">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Lightbulb className="w-5 h-5 text-warning" />
+                    <span className="text-xs font-medium text-surface-400 uppercase tracking-wider">Value Clarity</span>
+                  </div>
+                  <p className="text-3xl font-bold text-surface-900">
+                    {percentDisplay(study.summary_metrics.value_prop_clarity.value)}
+                  </p>
+                  <p className="text-xs text-surface-400 mt-1">
+                    Value proposition clarity score
+                  </p>
                 </div>
-                <p className="text-3xl font-bold text-surface-900">
-                  {percentDisplay(study.summary_metrics.value_prop_clarity.value)}
-                </p>
-                <p className="text-xs text-surface-400 mt-1">
-                  {study.summary_metrics.value_prop_clarity.clear_count} clear / {study.summary_metrics.value_prop_clarity.unclear_count} unclear
-                </p>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           {/* Tabs */}
           <div className="flex gap-1 mb-6 border-b border-surface-200">
@@ -487,13 +505,13 @@ export default function StudyResultsPage() {
         </>
       )}
 
-      {/* Failed State */}
+      {/* Failed State - Move this up so it displays along with partial results */}
       {study.status === 'failed' && (
-        <div className="card p-12 text-center">
+        <div className="card p-8 text-center bg-error-light/10 border-error/20 mb-8">
           <XCircle className="w-12 h-12 text-error mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-surface-800 mb-2">Study Failed</h3>
-          <p className="text-surface-500 mb-4">{study.error_message || 'An error occurred during the study.'}</p>
-          <button onClick={() => retryFailedSessions(studyId)} className="btn-primary">
+          <p className="text-surface-600 mb-4">{study.error_message || 'An error occurred during the study.'}</p>
+          <button onClick={() => retryFailedSessions(studyId)} className="btn-primary mx-auto">
             <RefreshCw className="w-4 h-4" />
             Retry Failed Sessions
           </button>

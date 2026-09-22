@@ -39,7 +39,7 @@
 ### 1. Database Setup (Supabase)
 1. In your Supabase Project dashboard, open the **SQL Editor**.
 2. Run the SQL migration script: [`backend/db/migrations/0001_init.sql`](backend/db/migrations/0001_init.sql).
-3. Create a public Storage bucket named **`screenshots`** in Supabase Storage.
+*(Note: The `screenshots` storage bucket is created automatically on first backend startup).*
 
 ### 2. Backend Setup (FastAPI)
 ```bash
@@ -47,18 +47,15 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
 
 # Configure environment
 cp .env.example .env
 # Edit .env with your Supabase URL, Service Role Key, and LLM API Keys (Groq, Gemini, OpenRouter, Claude)
 
-# Start API Server
+# Start API and Worker (unified mode)
 uvicorn app.main:app --reload --port 8000
-
-# Start Background Worker (separate terminal)
-python worker_entrypoint.py
 ```
+*(Note: Playwright browser binaries are installed automatically on first startup).*
 
 ### 3. Frontend Setup (Next.js)
 ```bash

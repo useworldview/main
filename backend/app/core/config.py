@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Run mode: "unified" (API + worker in one process), "api_only", "worker_only"
     run_mode: str = "unified"
 
+    # Frontend URL
+    frontend_url: str = "http://localhost:3000"
+
     # Persona limits
     max_personas_per_study: int = 10
 

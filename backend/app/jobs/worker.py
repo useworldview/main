@@ -27,7 +27,6 @@ _shutdown = False
 
 # Background worker task reference (used in unified mode)
 _worker_task: Optional[asyncio.Task] = None
-_worker_lock = asyncio.Lock() if hasattr(asyncio, 'Lock') else None
 
 
 def _handle_signal(signum, frame):
