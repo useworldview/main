@@ -39,11 +39,15 @@ def enqueue_job(
     logger.info(f"Enqueued job {job_id} type={job_type}")
 
     # Wake the background worker (no-op if not in unified mode or already running)
-    try:
-        from app.jobs.worker import wake_worker
-        wake_worker()
-    except Exception as e:
-        logger.debug(f"Could not wake worker (may be running standalone): {e}")
+    from app.core.config import get_settings
+    settings = get_settings()
+    
+    if settings.run_mode != "webhook":
+        try:
+            from app.jobs.worker import wake_worker
+            wake_worker()
+        except Exception as e:
+            logger.debug(f"Could not wake worker (may be running standalone): {e}")
 
     return job_id
 

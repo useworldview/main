@@ -10,7 +10,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Fix for Windows: Playwright needs ProactorEventLoop for subprocess support.
@@ -147,3 +147,54 @@ async def internal_worker_status():
         "has_pending_jobs": has_pending_or_running_jobs(),
         "run_mode": settings.run_mode,
     }
+
+
+@app.post("/internal/webhook/process-job")
+async def internal_webhook_process_job(
+    request: Request,
+    authorization: str = Header(None)
+):
+    """
+    Supabase Database Webhook handler.
+    Called when a new job is inserted into `agent_jobs`.
+    Runs the job synchronously to ensure Cloud Run CPU remains allocated.
+    """
+    settings = get_settings()
+    
+    if settings.run_mode != "webhook":
+        return {"status": "skipped", "reason": "not in webhook mode"}
+
+    if not settings.webhook_secret:
+        logger.error("Webhook secret is not configured")
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+
+    # Verify authorization header (Bearer token)
+    expected_header = f"Bearer {settings.webhook_secret}"
+    if authorization != expected_header:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    payload = await request.json()
+    
+    if payload.get("type") != "INSERT":
+        return {"status": "skipped", "reason": "not an insert event"}
+
+    # We use claim_jobs to safely pick up the next pending job.
+    # This avoids race conditions if multiple webhooks fire concurrently.
+    from app.jobs.queue import claim_jobs
+    from app.jobs.worker import dispatch_job
+    import uuid
+    
+    worker_id = f"webhook-{uuid.uuid4().hex[:8]}"
+    
+    # Claim 1 job from the queue
+    jobs = claim_jobs(worker_id=worker_id, limit=1)
+    
+    if not jobs:
+        return {"status": "skipped", "reason": "no pending jobs found"}
+        
+    job = jobs[0]
+    
+    # Run the job synchronously in the HTTP request to keep Cloud Run alive
+    await dispatch_job(job)
+    
+    return {"status": "ok", "job_id": job["id"]}

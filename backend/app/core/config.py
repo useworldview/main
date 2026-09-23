@@ -38,8 +38,11 @@ class Settings(BaseSettings):
     worker_concurrency: int = 2
     worker_idle_shutdown_seconds: int = 30  # Cloud Run: exit after N seconds with no jobs
 
-    # Run mode: "unified" (API + worker in one process), "api_only", "worker_only"
+    # Run mode: "unified" (API + worker in one process), "api_only", "worker_only", "webhook"
     run_mode: str = "unified"
+    
+    # Webhook secret for Supabase Cloud Run triggering
+    webhook_secret: Optional[str] = None
 
     # Frontend URL
     frontend_url: str = "http://localhost:3000"

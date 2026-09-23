@@ -28,7 +28,6 @@ logging.basicConfig(
     datefmt=date_format,
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/worker.log", encoding="utf-8"),
     ],
 )
 
