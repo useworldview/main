@@ -158,7 +158,7 @@ If you've been on the same page for a while, consider navigating to an unvisited
                 study_id=study_id,
                 session_id=session_id,
                 temperature=0.7,
-                max_tokens=1024,
+                max_tokens=512,
                 response_format={"type": "json_object"},
             )
         else:
@@ -168,7 +168,7 @@ If you've been on the same page for a while, consider navigating to an unvisited
                 study_id=study_id,
                 session_id=session_id,
                 temperature=0.7,
-                max_tokens=1024,
+                max_tokens=512,
                 response_format={"type": "json_object"},
             )
 
@@ -281,8 +281,8 @@ def _build_session_history(history: list[dict]) -> str:
         return "This is your first action on this site."
 
     lines = [f"You've taken {len(history)} actions so far:"]
-    # Show last 10 actions to avoid token bloat
-    recent = history[-10:]
+    # Show last 5 actions to avoid token bloat
+    recent = history[-5:]
     for i, entry in enumerate(recent):
         action = entry.get("action", "unknown")
         url = entry.get("url", "")
@@ -303,17 +303,17 @@ def _build_page_map(discovered_pages: list[dict], pages_visited: set) -> str:
 
     lines = ["The following pages were discovered on this website:"]
     
-    # Group by source
-    nav_pages = [p for p in discovered_pages if p['source'] == 'nav']
-    footer_pages = [p for p in discovered_pages if p['source'] == 'footer']
-    content_pages = [p for p in discovered_pages if p['source'] == 'content']
-    other_pages = [p for p in discovered_pages if p['source'] not in ('nav', 'footer', 'content')]
+    # Group by source and cap tightly to prevent token overflow
+    nav_pages = [p for p in discovered_pages if p['source'] == 'nav'][:5]
+    content_pages = [p for p in discovered_pages if p['source'] == 'content'][:3]
+    footer_pages = [p for p in discovered_pages if p['source'] == 'footer'][:1]
+    other_pages = [p for p in discovered_pages if p['source'] not in ('nav', 'footer', 'content')][:1]
 
     def format_page_list(pages: list[dict], label: str) -> list[str]:
         if not pages:
             return []
         result = [f"\n**{label}:**"]
-        for p in pages[:15]:  # Cap to avoid token bloat
+        for p in pages:
             visited = "✅ VISITED" if p['url'] in pages_visited else "❌ NOT YET VISITED"
             result.append(f"  - [{visited}] \"{p['text']}\" → {p['url']}")
         return result

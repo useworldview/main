@@ -66,13 +66,7 @@ export default function StudyResultsPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'studies', filter: `id=eq.${studyId}` },
         (payload) => { 
           if (payload.new) {
-            const newStudy = payload.new as Study;
-            setStudy((prev) => {
-              if (prev && prev.status !== 'completed' && newStudy.status === 'completed') {
-                setTimeout(() => fetchAll(), 0);
-              }
-              return newStudy;
-            });
+            setStudy(payload.new as Study);
           }
         }
       )
@@ -85,7 +79,7 @@ export default function StudyResultsPage() {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [studyId]);
+  }, [studyId, study?.status]);
 
   if (loading || !study) {
     return (
@@ -213,9 +207,7 @@ export default function StudyResultsPage() {
                     {session.status === 'queued' && <Clock className="w-4 h-4 text-surface-400" />}
                     {session.status === 'failed' && <XCircle className="w-4 h-4 text-error" />}
                     <span className="text-xs text-surface-500 capitalize">{session.status}</span>
-                    {session.step_count > 0 && (
-                      <span className="text-xs text-surface-400">• {session.step_count}/{session.step_budget} steps</span>
-                    )}
+                    <span className="text-xs text-surface-400">• {session.step_count}/{session.step_budget} steps</span>
                   </div>
                   {/* Show error reason for failed sessions */}
                   {session.status === 'failed' && session.outcome_reason && (
@@ -228,14 +220,25 @@ export default function StudyResultsPage() {
                       </p>
                     </div>
                   )}
-                  {session.step_count > 0 && (
-                    <div className="mt-2 h-1.5 rounded-full bg-surface-200 overflow-hidden">
+                  <div className="mt-3">
+                    <p className="text-[11px] text-surface-500 mb-1.5 truncate">
+                      {session.current_phase || (session.status === 'queued' ? 'Waiting in queue...' : 'Initializing...')}
+                    </p>
+                    <div className="h-1.5 rounded-full bg-surface-200 overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-brand-500 to-indigo-500 transition-all duration-500"
-                        style={{ width: `${Math.min((session.step_count / session.step_budget) * 100, 100)}%` }}
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          session.status === 'queued' 
+                            ? 'bg-surface-300 w-full opacity-50 animate-pulse' 
+                            : 'bg-gradient-to-r from-brand-500 to-indigo-500'
+                        }`}
+                        style={{ 
+                          width: session.status === 'queued' 
+                            ? '100%' 
+                            : `${Math.max(2, Math.min((session.step_count / session.step_budget) * 100, 100))}%` 
+                        }}
                       />
                     </div>
-                  )}
+                  </div>
                 </Link>
               );
             })}

@@ -4,6 +4,7 @@ Tries providers in order: Groq → Gemini → OpenRouter → Claude.
 Logs token usage to llm_usage_log for every call.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -73,7 +74,9 @@ async def _call_groq(
     if not settings.groq_api_key:
         raise ValueError("GROQ_API_KEY not configured")
 
-    client = Groq(api_key=settings.groq_api_key)
+    # max_retries=0: don't let the SDK wait 43s on 429 — fail fast so our
+    # fallback chain switches providers instantly.
+    client = Groq(api_key=settings.groq_api_key, max_retries=0, timeout=30.0)
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -84,7 +87,7 @@ async def _call_groq(
     if response_format:
         kwargs["response_format"] = response_format
 
-    response = client.chat.completions.create(**kwargs)
+    response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
 
     return LLMResponse(
         content=response.choices[0].message.content or "",
@@ -136,7 +139,7 @@ async def _call_gemini(
         system_instruction=system_instruction,
         generation_config=gen_config,
     )
-    response = gen_model.generate_content(contents)
+    response = await asyncio.to_thread(gen_model.generate_content, contents)
 
     # Estimate tokens (Gemini doesn't always return exact counts)
     input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) if hasattr(response, "usage_metadata") else 0
@@ -165,9 +168,12 @@ async def _call_openrouter(
     if not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY not configured")
 
+    # max_retries=0: fail fast on 429, let our fallback chain handle it.
     client = OpenAI(
         api_key=settings.openrouter_api_key,
         base_url="https://openrouter.ai/api/v1",
+        max_retries=0,
+        timeout=30.0,
     )
 
     kwargs: dict[str, Any] = {
@@ -179,7 +185,7 @@ async def _call_openrouter(
     if response_format:
         kwargs["response_format"] = response_format
 
-    response = client.chat.completions.create(**kwargs)
+    response = await asyncio.to_thread(client.chat.completions.create, **kwargs)
 
     return LLMResponse(
         content=response.choices[0].message.content or "",
@@ -205,7 +211,8 @@ async def _call_claude(
     if not settings.anthropic_api_key:
         raise ValueError("ANTHROPIC_API_KEY not configured")
 
-    client = Anthropic(api_key=settings.anthropic_api_key)
+    # max_retries=0: fail fast on 429, let our fallback chain handle it.
+    client = Anthropic(api_key=settings.anthropic_api_key, max_retries=0, timeout=30.0)
 
     # Extract system message
     system_text = ""
@@ -225,7 +232,7 @@ async def _call_claude(
     if system_text:
         kwargs["system"] = system_text
 
-    response = client.messages.create(**kwargs)
+    response = await asyncio.to_thread(client.messages.create, **kwargs)
 
     content = ""
     for block in response.content:
@@ -334,11 +341,15 @@ async def call_llm(
             logger.info(f"[LLM] Trying provider '{provider_name}' for purpose='{purpose}'")
             start_time = time.time()
 
-            response = await provider_fn(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
+            # Wrap in asyncio.wait_for to prevent hanging on a slow provider
+            response = await asyncio.wait_for(
+                provider_fn(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                ),
+                timeout=60.0,
             )
 
             elapsed = time.time() - start_time
@@ -361,9 +372,20 @@ async def call_llm(
 
             return response
 
+        except asyncio.TimeoutError:
+            error_msg = f"Provider '{provider_name}' timed out after 60s"
+            logger.warning(f"[LLM] ⏱️ {error_msg} — switching to next provider")
+            errors.append(error_msg)
+            continue
+
         except Exception as e:
             error_msg = f"Provider '{provider_name}' failed: {type(e).__name__}: {str(e)}"
-            logger.error(f"[LLM] ❌ {error_msg}")
+            # Log rate-limit errors as warnings (expected, fallback handles it)
+            err_str = str(e).lower()
+            if '429' in err_str or 'rate' in err_str or 'limit' in err_str or 'quota' in err_str:
+                logger.warning(f"[LLM] ⚡ Rate limited on '{provider_name}' — switching to next provider instantly")
+            else:
+                logger.error(f"[LLM] ❌ {error_msg}")
             errors.append(error_msg)
             continue
 
@@ -404,39 +426,51 @@ async def call_llm_with_vision(
             if provider_name == "groq":
                 # Groq supports vision with qwen/qwen3.8-27b
                 vision_messages = _build_vision_messages_openai_style(messages, image_base64)
-                response = await _call_groq(
-                    messages=vision_messages,
-                    model="qwen/qwen3.8-27b",
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
+                response = await asyncio.wait_for(
+                    _call_groq(
+                        messages=vision_messages,
+                        model="qwen/qwen3.8-27b",
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    ),
+                    timeout=60.0,
                 )
             elif provider_name == "gemini":
                 # Gemini natively supports vision
                 vision_messages = _build_vision_messages_gemini(messages, image_base64)
-                response = await _call_gemini(
-                    messages=vision_messages,
-                    model="gemini-2.5-flash",
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
+                response = await asyncio.wait_for(
+                    _call_gemini(
+                        messages=vision_messages,
+                        model="gemini-2.5-flash",
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    ),
+                    timeout=60.0,
                 )
             elif provider_name == "openrouter":
                 vision_messages = _build_vision_messages_openai_style(messages, image_base64)
-                response = await _call_openrouter(
-                    messages=vision_messages,
-                    model="openrouter/free",
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
+                response = await asyncio.wait_for(
+                    _call_openrouter(
+                        messages=vision_messages,
+                        model="openrouter/free",
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    ),
+                    timeout=60.0,
                 )
             elif provider_name == "claude":
                 vision_messages = _build_vision_messages_claude(messages, image_base64)
-                response = await _call_claude(
-                    messages=vision_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format=response_format,
+                response = await asyncio.wait_for(
+                    _call_claude(
+                        messages=vision_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format=response_format,
+                    ),
+                    timeout=60.0,
                 )
             else:
                 continue
@@ -455,9 +489,19 @@ async def call_llm_with_vision(
 
             return response
 
+        except asyncio.TimeoutError:
+            error_msg = f"Vision provider '{provider_name}' timed out after 60s"
+            logger.warning(f"[LLM] ⏱️ {error_msg} — switching to next provider")
+            errors.append(error_msg)
+            continue
+
         except Exception as e:
             error_msg = f"Vision provider '{provider_name}' failed: {type(e).__name__}: {str(e)}"
-            logger.error(f"[LLM] ❌ {error_msg}")
+            err_str = str(e).lower()
+            if '429' in err_str or 'rate' in err_str or 'limit' in err_str or 'quota' in err_str:
+                logger.warning(f"[LLM] ⚡ Rate limited on '{provider_name}' (vision) — switching to next provider instantly")
+            else:
+                logger.error(f"[LLM] ❌ {error_msg}")
             errors.append(error_msg)
             continue
 

@@ -54,7 +54,10 @@ async def perceive(driver: BrowserDriver) -> Perception:
 
     dom_snapshot = await driver.get_dom_snapshot()
     screenshot_base64 = await driver.take_screenshot()
-    screenshot_bytes = await driver.take_screenshot_bytes()
+    
+    import base64
+    screenshot_bytes = base64.b64decode(screenshot_base64) if screenshot_base64 else b""
+    
     has_overlay = await driver.detect_overlay()
 
     # Count interactive elements for logging

@@ -116,11 +116,22 @@ async def dispatch_job(job: dict) -> None:
             # Check if ALL sessions for this study are now terminal
             _check_study_completion(payload.get("study_id"))
 
-        # If this is a post-session analysis job that failed, still check study completion
-        if job_type == JobType.ANALYZE_SESSION:
+        # If this is a post-session analysis job that failed, it means the pipeline broke
+        if job_type in (JobType.ANALYZE_SESSION, JobType.SYNTHESIZE_STUDY):
             study_id = payload.get("study_id")
             if study_id:
-                _check_study_completion(study_id)
+                try:
+                    from app.core.supabase_client import get_supabase_client
+                    from datetime import datetime, timezone
+                    sb = get_supabase_client()
+                    sb.table("studies").update({
+                        "status": "failed",
+                        "error_message": f"{job_type.value} failed: {error_msg}",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", study_id).execute()
+                    logger.warning(f"[WORKER] Study {study_id[:8]} marked as FAILED due to {job_type.value} failure")
+                except Exception as inner_e:
+                    logger.error(f"[WORKER] Failed to mark study as failed after {job_type.value} error: {inner_e}")
 
 
 def _check_study_completion(study_id: Optional[str]) -> None:

@@ -91,6 +91,7 @@ async def run_agent_session(payload: dict) -> None:
     pages_visited: set[str] = set()
     discovered_pages: list[dict] = []  # Page map from DOM link crawling
     step_count = 0
+    consecutive_failures = 0  # Track consecutive nav/action failures
     start_time = time.time()
     outcome = "error"
     outcome_reason = "Session did not complete normally"
@@ -98,6 +99,7 @@ async def run_agent_session(payload: dict) -> None:
     try:
         # Launch browser
         logger.info(f"[SESSION:{sid}] Launching browser...")
+        _update_session_progress(sb, session_id, step_count=0, current_phase="Launching browser…")
         await driver.launch()
 
         # Check robots.txt for target URL
@@ -110,10 +112,11 @@ async def run_agent_session(payload: dict) -> None:
             return
 
         # Rate limit check
-        enforce_rate_limit(parsed.netloc)
+        await enforce_rate_limit(parsed.netloc)
 
         # Navigate to target URL
         logger.info(f"[SESSION:{sid}] Navigating to {target_url}...")
+        _update_session_progress(sb, session_id, step_count=0, current_phase="Loading target site…")
         nav_success = await driver.navigate(target_url)
         if not nav_success:
             outcome = "error"
@@ -127,6 +130,7 @@ async def run_agent_session(payload: dict) -> None:
         # OVERLAY DISMISSAL PHASE — runs before main loop, no LLM needed
         # ================================================================
         logger.info(f"[SESSION:{sid}] 🧹 Phase 1: Auto-dismissing overlays...")
+        _update_session_progress(sb, session_id, step_count=0, current_phase="Dismissing popups & cookie banners…")
         
         # First pass — dismiss immediately visible overlays
         dismissed_1 = await driver.dismiss_overlays()
@@ -163,6 +167,7 @@ async def run_agent_session(payload: dict) -> None:
         # PAGE DISCOVERY PHASE — crawl internal links for page map
         # ================================================================
         logger.info(f"[SESSION:{sid}] 🗺️ Phase 2: Discovering page links...")
+        _update_session_progress(sb, session_id, step_count=0, current_phase="Mapping site pages…")
         discovered_pages = await driver.discover_page_links(target_url)
         logger.info(f"[SESSION:{sid}] 🗺️ Found {len(discovered_pages)} navigable pages")
 
@@ -307,11 +312,18 @@ async def run_agent_session(payload: dict) -> None:
 
             # ACT
             logger.info(f"[SESSION:{sid}] Step {step_count} → ACT (action={decision.action})")
-            enforce_rate_limit(parsed.netloc, min_delay_seconds=0.5)
+            # Build a human-readable phase description
+            phase_text = _describe_phase(decision, current_url)
+            _update_session_progress(sb, session_id, step_count=step_count, current_phase=phase_text)
+            await enforce_rate_limit(parsed.netloc, min_delay_seconds=0.5)
             action_result = await execute_action(driver, decision)
 
             # Check for page errors after action
             if not action_result.get("success", False) and not action_result.get("blocked", False):
+                consecutive_failures += 1
+                logger.warning(
+                    f"[SESSION:{sid}] Action failed ({consecutive_failures}/3 consecutive)"
+                )
                 # Log page error
                 await _log_event(
                     sb=sb,
@@ -329,7 +341,14 @@ async def run_agent_session(payload: dict) -> None:
                     reasoning=f"Action failed: {action_result.get('details', {}).get('error', 'unknown')}",
                     study_id=study_id,
                 )
+                # Abort session if 3+ consecutive failures
+                if consecutive_failures >= 3:
+                    outcome = "error"
+                    outcome_reason = "Session aborted: 3 consecutive action failures"
+                    logger.error(f"[SESSION:{sid}] ❌ 3 consecutive failures — aborting session")
+                    break
             else:
+                consecutive_failures = 0  # Reset on success
                 # Log successful action
                 event_details = {
                     "thinking": decision.thinking,
@@ -383,12 +402,13 @@ async def run_agent_session(payload: dict) -> None:
                         existing_urls.add(link['url'])
                 logger.info(f"[SESSION:{sid}] 🗺️ Page map now has {len(discovered_pages)} pages")
 
-            # Update step count in DB periodically (every 5 steps)
-            if step_count % 5 == 0:
-                sb.table("agent_sessions").update({
-                    "step_count": step_count,
-                    "pages_visited": len(pages_visited),
-                }).eq("id", session_id).execute()
+            # Update step count in DB on EVERY step for real-time progress
+            _update_session_progress(
+                sb, session_id,
+                step_count=step_count,
+                pages_visited_count=len(pages_visited),
+                current_phase=phase_text,
+            )
 
     except Exception as e:
         import traceback as _tb
@@ -527,3 +547,63 @@ def _emit_event(sb, study_id: str, event_name: str, properties: dict) -> None:
         }).execute()
     except Exception as e:
         logger.warning(f"Failed to emit analytics event: {e}")
+
+
+def _update_session_progress(
+    sb,
+    session_id: str,
+    step_count: int,
+    current_phase: str = "",
+    pages_visited_count: int = 0,
+) -> None:
+    """
+    Update session progress in the DB on every step.
+    This powers the real-time progress bar in the frontend via Supabase Realtime.
+    """
+    try:
+        update = {
+            "step_count": step_count,
+            "current_phase": current_phase,
+        }
+        if pages_visited_count > 0:
+            update["pages_visited"] = pages_visited_count
+        sb.table("agent_sessions").update(update).eq("id", session_id).execute()
+    except Exception as e:
+        logger.warning(f"Failed to update session progress: {e}")
+
+
+def _describe_phase(decision, current_url: str) -> str:
+    """Build a human-readable phase description for the frontend progress display."""
+    from urllib.parse import urlparse
+    action = decision.action
+    parsed = urlparse(current_url)
+    page_name = parsed.path.strip("/").split("/")[-1] or "homepage"
+    page_name = page_name.replace("-", " ").replace("_", " ").title()
+
+    if action == "navigate":
+        target_url = str(decision.target or "")
+        if target_url:
+            target_parsed = urlparse(target_url)
+            target_page = target_parsed.path.strip("/").split("/")[-1] or "page"
+            target_page = target_page.replace("-", " ").replace("_", " ").title()
+            return f"Navigating to {target_page}\u2026"
+        return "Navigating\u2026"
+    elif action == "click":
+        return f"Clicking element on {page_name}\u2026"
+    elif action == "type":
+        return f"Typing in form on {page_name}\u2026"
+    elif action == "scroll_down":
+        return f"Scrolling down on {page_name}\u2026"
+    elif action == "scroll_up":
+        return f"Scrolling up on {page_name}\u2026"
+    elif action == "back":
+        return "Going back\u2026"
+    elif action == "forward":
+        return "Going forward\u2026"
+    elif action == "complete":
+        return "Completing session\u2026"
+    elif action == "abandon":
+        return "Leaving site\u2026"
+    else:
+        return f"Exploring {page_name}\u2026"
+

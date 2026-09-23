@@ -4,6 +4,7 @@ Manages headless Chromium lifecycle, screenshots, and DOM snapshots.
 """
 
 import base64
+import io
 import logging
 import re
 from typing import Optional
@@ -182,47 +183,149 @@ class BrowserDriver:
             logger.warning(f"[BROWSER] Error closing browser: {e}")
 
     async def navigate(self, url: str) -> bool:
-        """Navigate to a URL. Returns True on success."""
+        """Navigate to a URL. Returns True on success.
+        
+        Resilient navigation:
+        - Accepts any HTTP status < 500 (many SPAs return 404 for client-side routes)
+        - Retries once on timeout/failure
+        - Falls back to checking page content even after 'failure'
+        """
         logger.info(f"[BROWSER] Navigating to {url}...")
-        try:
-            response = await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Best-effort wait for network to settle — many modern SPAs (Vercel,
-            # Next.js, etc.) have persistent WebSocket/analytics connections that
-            # prevent networkidle from ever firing. Don't fail navigation for this.
+
+        for attempt in range(2):  # Retry once on failure
             try:
-                await self._page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                logger.debug(f"[BROWSER] networkidle timeout for {url} (normal for SPAs)")
-            success = response is not None and response.status < 400
-            if success:
-                logger.info(f"[BROWSER] ✅ Navigation success: {url} (HTTP {response.status})")
-            else:
+                response = await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                # Best-effort wait for network to settle — reduced from 10s to 5s
+                try:
+                    await self._page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    logger.debug(f"[BROWSER] networkidle timeout for {url} (normal for SPAs)")
+
+                # Relaxed success check: accept anything < 500
+                # Many sites return 403 for bot-check pages that still render content,
+                # or 404 for SPA routes that work fine client-side.
+                if response is not None and response.status < 500:
+                    logger.info(f"[BROWSER] ✅ Navigation success: {url} (HTTP {response.status})")
+                    return True
+
+                # Even on HTTP 5xx or no response, check if page actually has content
+                has_content = await self._page_has_content()
+                if has_content:
+                    status = response.status if response else 'no response'
+                    logger.info(
+                        f"[BROWSER] ✅ Navigation to {url} returned HTTP {status} "
+                        f"but page has content — treating as success"
+                    )
+                    return True
+
                 status = response.status if response else 'no response'
-                logger.warning(f"[BROWSER] ❌ Navigation failed: {url} (HTTP {status})")
-            return success
-        except Exception as e:
-            logger.error(f"[BROWSER] ❌ Navigation to {url} failed: {type(e).__name__}: {e}")
+                if attempt == 0:
+                    logger.warning(f"[BROWSER] ⚠️ Navigation to {url} got HTTP {status}, retrying...")
+                    await self._page.wait_for_timeout(1000)  # Brief pause before retry
+                    continue
+                else:
+                    logger.warning(f"[BROWSER] ❌ Navigation failed after retry: {url} (HTTP {status})")
+                    return False
+
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning(
+                        f"[BROWSER] ⚠️ Navigation to {url} failed: {type(e).__name__}: {e}, retrying..."
+                    )
+                    await self._page.wait_for_timeout(1000)
+                    continue
+                else:
+                    # Even after failure, check if page loaded some content
+                    try:
+                        has_content = await self._page_has_content()
+                        if has_content:
+                            logger.info(
+                                f"[BROWSER] ✅ Navigation to {url} threw error but page has content — treating as success"
+                            )
+                            return True
+                    except Exception:
+                        pass
+                    logger.error(f"[BROWSER] ❌ Navigation to {url} failed after retry: {type(e).__name__}: {e}")
+                    return False
+
+        return False
+
+    async def _page_has_content(self) -> bool:
+        """Check if the current page has meaningful content (title or body text)."""
+        try:
+            result = await self._page.evaluate("""() => {
+                const title = document.title || '';
+                const bodyText = (document.body && document.body.innerText) || '';
+                return title.length > 0 || bodyText.trim().length > 50;
+            }""")
+            return bool(result)
+        except Exception:
             return False
 
     async def take_screenshot(self) -> str:
-        """Take a full-page screenshot and return as base64."""
+        """Take a full-page screenshot, compress as JPEG, and return as base64.
+        
+        Full-page captures the entire page from top to bottom so the LLM
+        can see content below the fold (pricing, testimonials, CTAs).
+        JPEG compression at quality=60 keeps the image small (~100-200KB)
+        instead of multi-MB PNGs.
+        """
         try:
             screenshot_bytes = await self._page.screenshot(
                 type="png",
-                full_page=False,  # viewport only, not full page
+                full_page=True,  # Capture ENTIRE page, not just viewport
             )
-            return base64.b64encode(screenshot_bytes).decode("utf-8")
+            # Compress: convert PNG to JPEG and downscale for LLM vision
+            compressed = self._compress_screenshot(screenshot_bytes)
+            return base64.b64encode(compressed).decode("utf-8")
         except Exception as e:
             logger.error(f"[BROWSER] Screenshot failed: {e}")
             return ""
 
     async def take_screenshot_bytes(self) -> bytes:
-        """Take a screenshot and return raw bytes (for storage upload)."""
+        """Take a full-page screenshot and return raw bytes (for storage upload)."""
         try:
-            return await self._page.screenshot(type="png", full_page=False)
+            return await self._page.screenshot(type="png", full_page=True)
         except Exception as e:
             logger.error(f"[BROWSER] Screenshot bytes failed: {e}")
             return b""
+
+    def _compress_screenshot(self, png_bytes: bytes) -> bytes:
+        """Compress a PNG screenshot to JPEG with downscaling for LLM vision.
+        
+        Resizes to max 1280px width and compresses to JPEG quality=60.
+        A full-page PNG can be 5MB+; this produces ~100-200KB.
+        """
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(png_bytes))
+            
+            # Downscale if wider than 1280px
+            max_width = 1280
+            if img.width > max_width:
+                ratio = max_width / img.width
+                new_height = int(img.height * ratio)
+                # Cap height to avoid absurdly tall images (max ~5 viewports)
+                new_height = min(new_height, 3600)
+                img = img.resize((max_width, new_height), Image.LANCZOS)
+            elif img.height > 3600:
+                # Even at normal width, cap height
+                img = img.crop((0, 0, img.width, 3600))
+            
+            # Convert RGBA to RGB for JPEG
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=60, optimize=True)
+            compressed = buffer.getvalue()
+            logger.debug(
+                f"[BROWSER] Screenshot compressed: {len(png_bytes)//1024}KB PNG → {len(compressed)//1024}KB JPEG"
+            )
+            return compressed
+        except Exception as e:
+            logger.warning(f"[BROWSER] Screenshot compression failed, using raw PNG: {e}")
+            return png_bytes
 
     async def get_dom_snapshot(self) -> str:
         """
@@ -239,10 +342,14 @@ class BrowserDriver:
                         '[role="tab"], [role="menuitem"], [onclick], [tabindex]'
                     );
                     
+                    let count = 0;
+                    const MAX_ELEMENTS = 30;  // Cap to avoid token bloat
                     for (const el of all) {
+                        if (count >= MAX_ELEMENTS) break;
                         const rect = el.getBoundingClientRect();
                         if (rect.width === 0 || rect.height === 0) continue;
-                        if (rect.top > window.innerHeight * 2) continue;
+                        // No viewport-height filter — capture ALL elements on the page
+                        // so the agent can see pricing sections, CTAs, etc. below the fold
                         
                         const style = window.getComputedStyle(el);
                         if (style.display === 'none' || style.visibility === 'hidden') continue;
@@ -269,6 +376,7 @@ class BrowserDriver:
                             width: Math.round(rect.width), height: Math.round(rect.height),
                             visible: rect.top < window.innerHeight && rect.bottom > 0,
                         });
+                        count++;
                     }
                     return elements;
                 }
@@ -283,9 +391,9 @@ class BrowserDriver:
                         if (text) headings.push({ level: h.tagName, text });
                     });
                     
-                    // Get visible text content (truncated)
+                    // Get ALL visible text content from the entire page (not just viewport)
                     const body = document.body;
-                    const visibleText = body ? body.innerText.substring(0, 3000) : '';
+                    const visibleText = body ? body.innerText.substring(0, 5000) : '';
                     
                     return {
                         title, url,

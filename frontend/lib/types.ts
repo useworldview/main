@@ -114,6 +114,7 @@ export interface AgentSession {
   outcome: 'completed' | 'abandoned' | 'error' | null;
   outcome_reason: string | null;
   pages_visited: number;
+  current_phase?: string | null;
   created_at: string;
   // Joined fields
   persona?: Persona;
@@ -128,6 +129,7 @@ export interface InteractionEvent {
   page_url: string | null;
   details: Record<string, unknown>;
   screenshot_ref: string | null;
+  reasoning: string | null;
   occurred_at: string;
 }
 
@@ -140,6 +142,7 @@ export interface Finding {
   linked_event_ids: string[];
   created_at: string;
 }
+
 
 export type FeelingLabel =
   | 'confused'

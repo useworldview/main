@@ -100,13 +100,13 @@ def _parse_robots(text: str) -> dict:
     return rules
 
 
-def enforce_rate_limit(domain: str, min_delay_seconds: float = 1.0) -> None:
+async def enforce_rate_limit(domain: str, min_delay_seconds: float = 1.0) -> None:
     """
     Enforce rate limiting per domain.
     Records timestamps; caller should call this BEFORE making requests.
-    Uses non-blocking approach — adjusts timing via asyncio.sleep in the caller
-    if needed, but avoids blocking the event loop here.
+    Uses asyncio.sleep to avoid blocking the event loop.
     """
+    import asyncio
     now = time.time()
 
     if domain not in _domain_timestamps:
@@ -120,13 +120,11 @@ def enforce_rate_limit(domain: str, min_delay_seconds: float = 1.0) -> None:
     if timestamps:
         elapsed = now - timestamps[-1]
         if elapsed < min_delay_seconds:
-            # Use a short blocking sleep — acceptable because this is called
-            # from the agent session runner which is already in a dedicated task
-            # and the delay is sub-second (0.5-1s)
             sleep_time = min_delay_seconds - elapsed
-            time.sleep(sleep_time)
+            await asyncio.sleep(sleep_time)
 
     _domain_timestamps[domain].append(time.time())
+
 
 
 def check_step_budget(current_step: int, max_steps: int) -> None:

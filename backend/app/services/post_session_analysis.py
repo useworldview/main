@@ -308,17 +308,21 @@ def _format_event_log(events: list[dict]) -> str:
 
         details = event.get("details", {})
         if details.get("thinking"):
-            line += f"\n  Thinking: {details['thinking']}"
+            line += f"\n  Thinking: {str(details['thinking'])[:150]}"
         if details.get("feeling"):
-            line += f"\n  Feeling: {details['feeling']}"
+            line += f"\n  Feeling: {str(details['feeling'])[:50]}"
         if details.get("trust_signal"):
-            line += f"\n  Trust signal: {details['trust_signal']}"
+            line += f"\n  Trust signal: {str(details['trust_signal'])[:100]}"
         if details.get("like_or_dislike"):
-            line += f"\n  Like/Dislike: {details['like_or_dislike']}"
+            line += f"\n  Like/Dislike: {str(details['like_or_dislike'])[:100]}"
         if details.get("error"):
-            line += f"\n  ERROR: {details['error']}"
-
+            line += f"\n  ERROR: {str(details['error'])[:100]}"
+        
         lines.append(line)
+        
+    # If the log is too long, we keep the first 5 and last 20 events to fit in token limits
+    if len(lines) > 25:
+        lines = lines[:5] + ["\n... [Middle events truncated due to length] ...\n"] + lines[-20:]
 
     return "\n\n".join(lines)
 

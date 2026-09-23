@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import {
   type Persona, type AgentSession, type Finding, type DecisionExplanation,
-  FEELING_CONFIG, type FeelingLabel
+  FEELING_CONFIG, type FeelingLabel, type InteractionEvent
 } from '@/lib/types';
 import { track } from '@/lib/analytics';
 import {
@@ -25,6 +25,7 @@ export default function PersonaDetailPage() {
   const [session, setSession] = useState<AgentSession | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [decisions, setDecisions] = useState<DecisionExplanation[]>([]);
+  const [events, setEvents] = useState<InteractionEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -42,12 +43,14 @@ export default function PersonaDetailPage() {
         const sess = sessionRes.data as AgentSession;
         setSession(sess);
 
-        const [findingsRes, decisionsRes] = await Promise.all([
+        const [findingsRes, decisionsRes, eventsRes] = await Promise.all([
           supabase.from('findings').select('*').eq('session_id', sess.id),
           supabase.from('decision_explanations').select('*').eq('session_id', sess.id),
+          supabase.from('interaction_events').select('*').eq('session_id', sess.id).order('sequence_no'),
         ]);
         if (findingsRes.data) setFindings(findingsRes.data as Finding[]);
         if (decisionsRes.data) setDecisions(decisionsRes.data as DecisionExplanation[]);
+        if (eventsRes.data) setEvents(eventsRes.data as InteractionEvent[]);
       }
       setLoading(false);
     }
@@ -355,6 +358,58 @@ export default function PersonaDetailPage() {
                     <p className="text-sm text-surface-700">{d.rationale_text}</p>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Journey Timeline */}
+          {events.length > 0 && (
+            <div className="card p-6">
+              <h3 className="font-semibold text-surface-800 mb-6 flex items-center gap-2">
+                <Route className="w-5 h-5 text-brand-500" />
+                Step-by-Step Journey
+              </h3>
+              <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-surface-200 before:to-transparent">
+                {events.map((event, index) => {
+                  const linkedFindings = findings.filter(f => f.linked_event_ids?.includes(event.id));
+                  
+                  return (
+                    <div key={event.id} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-full border-4 border-white bg-brand-100 text-brand-500 shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 z-10">
+                        <span className="text-xs font-bold">{event.sequence_no}</span>
+                      </div>
+                      
+                      <div className="w-[calc(100%-4rem)] md:w-[calc(50%-3rem)] card p-4 hover:border-brand-300 transition-colors">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="badge badge-surface uppercase text-[10px] tracking-wider">{event.event_type}</span>
+                          <span className="text-xs text-surface-400 truncate max-w-xs" title={event.page_url || undefined}>
+                            {event.page_url ? (event.page_url.startsWith('http') ? new URL(event.page_url).pathname : event.page_url) : ''}
+                          </span>
+                        </div>
+                        <p className="text-sm font-medium text-surface-800 mb-2">{event.reasoning}</p>
+                        
+                        {typeof event.details?.action_description === 'string' && (
+                          <p className="text-xs text-surface-600 italic">&quot;{event.details.action_description}&quot;</p>
+                        )}
+                        
+                        {linkedFindings.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-surface-100 space-y-2">
+                            {linkedFindings.map(f => (
+                              <div key={f.id} className="flex gap-2 text-xs">
+                                {f.type === 'like' && <ThumbsUp className="w-3.5 h-3.5 text-success shrink-0" />}
+                                {f.type === 'dislike' && <ThumbsDown className="w-3.5 h-3.5 text-error shrink-0" />}
+                                {f.type === 'feeling' && <Heart className="w-3.5 h-3.5 text-pink-500 shrink-0" />}
+                                {f.type === 'trust' && <Shield className="w-3.5 h-3.5 text-success shrink-0" />}
+                                {f.type === 'distrust' && <AlertTriangle className="w-3.5 h-3.5 text-error shrink-0" />}
+                                <span className="text-surface-600">{f.description}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
