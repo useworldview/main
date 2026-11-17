@@ -49,6 +49,8 @@ pnpm-debug.log*
 # Runtime / storage
 screenshots/
 */screenshots/
+session_output*.txt
+*/session_output*.txt
 
 # OS metadata
 .DS_Store

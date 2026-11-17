@@ -28,7 +28,8 @@
 [Quick Start](#-quick-start) •
 [API Reference](#-api-endpoints) •
 [Frontend Guide](frontend/README.md) •
-[Backend Guide](backend/README.md)
+[Backend Guide](backend/README.md) •
+[Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -279,8 +280,7 @@ sequenceDiagram
 │   └── README.md                  # Comprehensive Frontend Documentation
 │
 ├── DESIGN.md                      # Design System & Visual Specification
-├── PRODUCT.md                     # Product Principles & Schema
-├── UseWorldview_PRD_v1.md         # Full Product Requirements Document
+├── CONTRIBUTING.md                # Contribution Guidelines
 ├── LICENSE                        # MIT License
 └── README.md                      # Project Root README
 ```

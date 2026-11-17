@@ -16,3 +16,4 @@ build/
 .mypy_cache/
 .ruff_cache/
 screenshots/
+session_output*.txt
