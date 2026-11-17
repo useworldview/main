@@ -4,8 +4,6 @@
 
 <br />
 
-![UseWorldview Banner](https://raw.githubusercontent.com/useworldview/useworldview/main/frontend/public/globe.svg)
-
 ### **AI-Powered Synthetic User Research Platform**
 
 *Simulate realistic, diverse human personas interacting with your live web application autonomously via browser agents — delivering psychographic behavioral telemetry, step-by-step journey replays, and prioritized, evidence-backed UX recommendations.*
